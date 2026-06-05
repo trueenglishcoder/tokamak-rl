@@ -1,0 +1,28 @@
+enabled: false
+note: >
+  Conservative preset with all simulator-supported sensor and actuator
+  perturbations disabled. Turn enabled on and set explicit nonzero values for
+  noisy training or validation.
+actuators:
+  pfc_delay_steps: 0
+  sol_delay_steps: 0
+  pfc_gain_sigma: 0.0
+  sol_gain_sigma: 0.0
+  pfc_bias_sigma: 0.0
+  sol_bias_sigma: 0.0
+  pfc_command_noise_sigma: 0.0
+  sol_command_noise_sigma: 0.0
+sensors:
+  ip_noise_sigma: 0.0
+  ip_bias: 0.0
+  ip_bias_sigma: 0.0
+  ip_delay_steps: 0
+  active_current_noise_sigma: 0.0
+  active_current_bias_sigma: 0.0
+  active_current_delay_steps: 0
+  radii_noise_sigma: 0.0
+  radii_bias_sigma: 0.0
+  radii_delay_steps: 0
+  boundary_xy_noise_sigma: 0.0
+  boundary_delay_steps: 0
+  psi_noise_sigma: 0.0

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tokamak-rl"
+version = "0.1.0"
+description = "Companion reinforcement-learning environments and tooling for tokamak-sim."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["tokamak", "plasma", "reinforcement-learning", "control"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "gymnasium>=0.29",
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+]
+train = [
+  "torch>=2.2",
+  "tensorboard>=2.15",
+]
+
+[project.scripts]
+tokamak-rl-train = "tokamak_rl.training.cli:main"
+tokamak-rl-evaluate = "tokamak_rl.evaluation.cli:main"
+tokamak-rl-rollout = "tokamak_rl.evaluation.cli:main"
+tokamak-rl-export = "tokamak_rl.export.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tokamak_rl"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "tokamak_rl",
+  "configs",
+  "scripts",
+  "README.md",
+  "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

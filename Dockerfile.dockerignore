@@ -1,0 +1,46 @@
+# Python state
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/.venv*/
+**/.env/
+**/env/
+
+# Git and local agent metadata
+**/.git/
+**/.agents/
+**/.codex/
+
+# Generated outputs and heavyweight local inputs
+tokamak-sim/configs/
+tokamak-sim/data/
+tokamak-sim/runs/
+tokamak-sim/output/
+tokamak-sim/synthetic_iter/
+tokamak-sim/_local_archive/
+tokamak-rl/runs/
+tokamak-rl/output/
+tokamak-rl/outputs/
+tokamak-rl/checkpoints/
+tokamak-rl/wandb/
+tokamak-rl/tensorboard/
+tokamak-rl/_local_archive/
+
+# Build artifacts
+**/build/
+**/dist/
+**/*.egg-info/
+**/.eggs/
+**/.coverage
+**/htmlcov/
+
+# Editor/OS noise
+**/.idea/
+**/.vscode/
+**/*.swp
+**/.DS_Store
+**/Thumbs.db
+**/*:Zone.Identifier

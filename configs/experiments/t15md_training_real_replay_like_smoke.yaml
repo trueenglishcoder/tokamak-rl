@@ -1,0 +1,105 @@
+name: t15md_training_real_replay_like_smoke
+sim:
+  config_path: ../tokamak-sim/configs/T15MD_new_data.toml
+  initial_currents_path: null
+  initial_state:
+    ip: 0.0
+    coil_currents: zero
+    ip_scale: 500000.0
+  reference_source:
+    kind: t15_synthetic_follow
+    preset: t15_real_replay_like_smoke
+    seed: 11
+    duration_s: 0.05
+    t_step: 0.001
+    target_update_s: 0.01
+    theta_count: 512
+    ip:
+      kind: template_dir
+      path: ../tokamak-sim/data/t15_data_new/ip
+      seed: 101
+      amplitude_jitter: 0.01
+      duration_jitter: 0.01
+      shape_jitter: 0.005
+      start: 0.0
+    boundary:
+      kind: generated_parameters
+      bounds:
+        R0:
+          min: 1.3266
+          max: 1.4756
+        Z0:
+          min: -0.0496
+          max: 0.0137
+        A0:
+          min: 0.5200
+          max: 0.6641
+        kappa:
+          min: 1.1212
+          max: 1.4966
+        delta:
+          min: 0.1044
+          max: 0.3656
+      rate_limits:
+        R0: 0.30
+        Z0: 0.70
+        A0: 0.45
+        kappa: 1.20
+        delta: 0.80
+  angles: 32
+  max_episode_steps: 4
+  realism_enabled: false
+  resample_references_on_reset: true
+  observation:
+    version: v2
+    target_preview_steps: 2
+    target_preview_stride: 1
+  termination:
+    terminate_on_boundary_loss: true
+    boundary_loss_grace_steps: 4
+    terminate_on_nonfinite_observation: true
+    terminate_on_nonfinite_reward: true
+    current_limit_margin_min: null
+    derivative_limit_margin_min: null
+    measured_boundary_missing_steps: null
+reward_config: ../rewards/joint_current_boundary.yaml
+randomization_config: ../randomization/conservative.yaml
+evaluation:
+  deterministic: true
+  episodes: 1
+  max_steps: 2
+  validation_seed: 9000
+  randomization_mode: clean
+training:
+  enabled: true
+  trainer: tcv_style
+  total_steps: 8
+  warmup_steps: 2
+  batch_size: 1
+  sequence_length: 2
+  hidden_dim: 16
+  critic_hidden_dim: 16
+  critic_mlp_hidden_dim: 16
+  mpo_kl_lr: 0.0003
+  mpo_epsilon: 0.1
+  mpo_mean_kl_epsilon: 0.01
+  mpo_std_kl_epsilon: 0.0001
+  mpo_action_samples: 4
+  mpo_temperature_iterations: 3
+  mpo_temperature_lr: 0.1
+  mpo_initial_temperature: 1.0
+  mpo_initial_mean_kl_penalty: 1.0
+  mpo_initial_std_kl_penalty: 1.0
+  device: cpu
+  seed: 37
+  num_envs: 1
+  updates_per_episode: 1
+  updates_per_env_step: 0
+  process_envs: false
+  process_start_method: spawn
+artifacts:
+  output_dir: outputs/stage_u_smoke
+  checkpoint_dir: outputs/stage_u_smoke/checkpoints
+  checkpoint_interval_steps: 4
+  max_step_checkpoints: 2
+  export_best_actor: true

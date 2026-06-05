@@ -1,0 +1,56 @@
+# Python state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.venv*/
+.env/
+env/
+
+# Build/package artifacts
+dist/
+build/
+*.egg-info/
+.eggs/
+.coverage
+htmlcov/
+
+# Local generated outputs
+runs/
+output/
+outputs/
+checkpoints/
+wandb/
+tensorboard/
+mlruns/
+lightning_logs/
+
+# Model/data artifacts produced by training and evaluation
+*.npz
+*.npy
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# Local-only notes/helpers
+_local_archive/
+local_archive/
+print_tree.py
+
+# Docker/local compose overrides
+docker-compose.override.yml
+.docker/
+
+# Editor/OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+
+# Local AI-agent instructions
+AGENTS.md

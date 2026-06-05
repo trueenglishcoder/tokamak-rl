@@ -1,0 +1,31 @@
+x-tokamak-rl-common: &tokamak-rl-common
+  build:
+    context: ..
+    dockerfile: tokamak-rl/Dockerfile
+    args:
+      PYTORCH_INDEX_URL: ${PYTORCH_INDEX_URL:-}
+  image: tokamak-rl:latest
+  working_dir: /workspace/tokamak-rl
+  environment:
+    MPLCONFIGDIR: /tmp/matplotlib
+    PYTHONUNBUFFERED: "1"
+    PYTHONPATH: /workspace/tokamak-sim:/workspace/tokamak-rl
+  volumes:
+    - .:/workspace/tokamak-rl
+    - ../tokamak-sim:/workspace/tokamak-sim:ro
+  command: ["python", "scripts/train.py", "--help"]
+
+services:
+  tokamak-rl:
+    <<: *tokamak-rl-common
+
+  tokamak-rl-gpu:
+    <<: *tokamak-rl-common
+    profiles: ["gpu"]
+    gpus: all
+    environment:
+      MPLCONFIGDIR: /tmp/matplotlib
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /workspace/tokamak-sim:/workspace/tokamak-rl
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}

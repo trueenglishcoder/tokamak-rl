@@ -1,0 +1,29 @@
+name: t15md_joint_current_boundary
+sim:
+  config_path: ../tokamak-sim/configs/T15MD_new_data.toml
+  initial_currents_path: null
+  initial_state:
+    ip: 0.0
+    coil_currents: zero
+    ip_scale: 500000.0
+  scenario_name: nominal
+  scenario_args: {}
+  angles: 32
+  max_episode_steps: 1000
+  realism_enabled: true
+  termination:
+    terminate_on_boundary_loss: true
+    boundary_loss_grace_steps: 50
+    terminate_on_nonfinite_observation: true
+    terminate_on_nonfinite_reward: true
+    current_limit_margin_min: null
+    derivative_limit_margin_min: null
+    measured_boundary_missing_steps: null
+reward_config: ../rewards/joint_current_boundary.yaml
+randomization_config: ../randomization/conservative.yaml
+evaluation:
+  deterministic: true
+  episodes: 1
+training:
+  enabled: false
+  note: env/reward/evaluation contracts come before large-scale training

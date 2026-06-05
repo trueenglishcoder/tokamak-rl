@@ -1,0 +1,40 @@
+# Local Python state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.venv*/
+.env/
+env/
+
+# Git and local agent metadata
+.git/
+.agents/
+.codex/
+
+# Generated outputs
+runs/
+output/
+outputs/
+checkpoints/
+wandb/
+tensorboard/
+_local_archive/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+.coverage
+htmlcov/
+
+# Editor/OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
