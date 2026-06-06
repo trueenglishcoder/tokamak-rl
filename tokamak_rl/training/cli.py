@@ -10,6 +10,7 @@ from tokamak_rl.randomization import DomainRandomizer
 from tokamak_rl.training.diagnostics import json_safe
 from tokamak_rl.training.simple_actor_critic import SimpleTrainerConfig, train_simple_actor_critic
 from tokamak_rl.training.tcv_style_actor_critic import TCVStyleTrainerConfig, train_tcv_style_actor_critic
+from tokamak_rl.training.wandb_logging import WandBConfig
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,6 +51,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--eval-episodes", type=int, default=None, help="Deterministic eval episodes after training.")
     parser.add_argument("--eval-max-steps", type=int, default=None, help="Max steps per eval episode.")
     parser.add_argument("--eval-randomization-mode", choices=["configured", "clean"], default=None, help="Evaluation randomization mode; defaults to experiment YAML.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable the terminal training progress bar.")
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging for this run.")
+    parser.add_argument("--wandb-project", default=None, help="Weights & Biases project name.")
+    parser.add_argument("--wandb-entity", default=None, help="Optional Weights & Biases entity/team.")
+    parser.add_argument("--wandb-name", default=None, help="Optional Weights & Biases run name.")
+    parser.add_argument("--wandb-group", default=None, help="Optional Weights & Biases run group.")
+    parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default=None, help="Weights & Biases mode.")
+    parser.add_argument("--wandb-tag", action="append", default=None, help="Weights & Biases tag; can be provided multiple times.")
+    parser.add_argument("--wandb-log-interval-steps", type=int, default=None, help="Environment-step interval for W&B scalar logging.")
+    parser.add_argument("--wandb-no-artifacts", action="store_true", help="Disable W&B artifact upload for metrics/checkpoints/exports.")
     parser.add_argument("--no-export-best-actor", action="store_true", help="Disable automatic exports/best_actor creation for checkpointed real-env runs.")
     args = parser.parse_args(argv)
 
@@ -67,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     run_metadata["process_start_method"] = process_start_method if process_envs else None
     eval_randomization_mode = args.eval_randomization_mode or experiment.evaluation.randomization_mode
     run_metadata["evaluation_randomization_mode"] = eval_randomization_mode
+    wandb = _resolve_wandb_config(args=args, base=experiment.wandb, experiment_name=experiment.name)
+    run_metadata["wandb"] = asdict(wandb)
     env_factory = _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method)
     eval_env_factory = _make_eval_env_factory(
         experiment=experiment,
@@ -92,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
             eval_max_steps=args.eval_max_steps if args.eval_max_steps is not None else experiment.evaluation.max_steps,
             eval_seed=experiment.evaluation.validation_seed,
             device=args.device if args.device is not None else experiment.training.device,
+            progress=not bool(args.no_progress),
+            wandb=wandb,
             export_best_actor=export_best_actor,
             run_metadata=run_metadata,
         )
@@ -131,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
             eval_max_steps=args.eval_max_steps if args.eval_max_steps is not None else experiment.evaluation.max_steps,
             eval_seed=experiment.evaluation.validation_seed,
             device=args.device if args.device is not None else experiment.training.device,
+            progress=not bool(args.no_progress),
+            wandb=wandb,
             export_best_actor=export_best_actor,
             run_metadata=run_metadata,
         )
@@ -171,6 +188,24 @@ def _experiment_run_metadata(*, experiment, trainer_name: str) -> dict[str, obje
             "randomization": asdict(experiment.randomization),
             "evaluation": asdict(experiment.evaluation),
         }
+    )
+
+
+def _resolve_wandb_config(*, args, base: WandBConfig, experiment_name: str) -> WandBConfig:
+    name = args.wandb_name if args.wandb_name is not None else base.name
+    if name is None and bool(args.wandb or base.enabled):
+        name = experiment_name
+    tags = base.tags if args.wandb_tag is None else tuple(str(tag) for tag in args.wandb_tag)
+    return WandBConfig(
+        enabled=bool(base.enabled or args.wandb),
+        project=str(args.wandb_project if args.wandb_project is not None else base.project),
+        entity=args.wandb_entity if args.wandb_entity is not None else base.entity,
+        name=name,
+        group=args.wandb_group if args.wandb_group is not None else base.group,
+        mode=str(args.wandb_mode if args.wandb_mode is not None else base.mode),
+        tags=tags,
+        log_interval_steps=int(args.wandb_log_interval_steps if args.wandb_log_interval_steps is not None else base.log_interval_steps),
+        log_artifacts=bool(base.log_artifacts and not args.wandb_no_artifacts),
     )
 
 

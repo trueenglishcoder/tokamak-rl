@@ -132,6 +132,31 @@ docker compose --profile gpu run --rm tokamak-rl-gpu \
 
 Training artifacts are written into the mounted `outputs/` or `checkpoints/` paths in this repository.
 
+Weights & Biases logging is optional. Enable it from the CLI with `--wandb`:
+
+```bash
+python scripts/train.py \
+  --config configs/experiments/t15md_training_circle_static_boundary.yaml \
+  --trainer tcv_style \
+  --wandb \
+  --wandb-project tokamak-rl \
+  --wandb-name circle-static-debug \
+  --wandb-mode online
+```
+
+Use `--wandb-mode offline` for server runs without immediate upload, `--wandb-log-interval-steps N` to reduce scalar logging frequency, and `--wandb-no-artifacts` if you do not want metrics/checkpoints/export folders uploaded as W&B artifacts. W&B can also be configured in experiment YAML:
+
+```yaml
+wandb:
+  enabled: true
+  project: tokamak-rl
+  name: circle-static-debug
+  mode: online
+  tags: circle, debug
+  log_interval_steps: 10
+  log_artifacts: true
+```
+
 ## Current Layout
 
 ```text
@@ -216,6 +241,7 @@ The reviewed training CLI supports:
 --eval-interval-steps     optional periodic deterministic evaluation interval
 --eval-episodes           deterministic evaluation episode count
 --eval-max-steps          maximum steps per evaluation episode
+--no-progress             disable the terminal progress bar
 ```
 
 The reviewed export CLI supports:

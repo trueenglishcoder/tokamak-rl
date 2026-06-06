@@ -23,8 +23,10 @@ from tokamak_rl.training.diagnostics import (
 )
 from tokamak_rl.training.device import resolve_training_device
 from tokamak_rl.training.export_artifacts import export_best_actor_artifact
+from tokamak_rl.training.progress import TrainingProgressBar
 from tokamak_rl.training.recurrent_critic import RecurrentUpdateResult, recurrent_critic_update_once
 from tokamak_rl.training.sequence_replay import EpisodeReplayBuffer
+from tokamak_rl.training.wandb_logging import WandBConfig, WandBLogger
 
 
 EnvFactory = Callable[[], object]
@@ -75,6 +77,8 @@ class TCVStyleTrainerConfig:
     max_step_checkpoints: int | None = None
     resume_checkpoint: Path | None = None
     device: str = "cpu"
+    progress: bool = False
+    wandb: WandBConfig = field(default_factory=WandBConfig)
     export_best_actor: bool = True
     run_metadata: dict[str, object] = field(default_factory=dict)
 
@@ -270,6 +274,13 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
     best_checkpoint_path: Path | None = None
     latest_checkpoint_path: Path | None = None
     reward_writer = RewardComponentWriter(cfg.output_dir)
+    progress = TrainingProgressBar(total_steps=int(cfg.total_steps), label="tcv_style", enabled=bool(cfg.progress))
+    wandb_logger = WandBLogger(
+        cfg.wandb,
+        config=_checkpoint_safe_config(cfg),
+        run_metadata={**json_safe(cfg.run_metadata), "device": device_selection.to_metadata(), "trainer": "tcv_style_recurrent_actor_critic_v1"},
+    )
+    progress.update(0, status=_tcv_progress_status(replay_episodes=0, replay_transitions=0, update_count=0), force=True)
 
     try:
         while step_count < int(cfg.total_steps):
@@ -300,11 +311,25 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
                 env_step_time_s += step_elapsed
                 collection_time_s += step_elapsed
                 diagnostics.record_step_info(step_info)
+                reward_components = step_info.get("reward_components") if isinstance(step_info, dict) else None
                 reward_writer.record(
                     step=step_count + 1,
                     env_index=env_index,
                     episode=episode_indices[env_index],
-                    components=step_info.get("reward_components") if isinstance(step_info, dict) else None,
+                    components=reward_components,
+                )
+                wandb_logger.log(
+                    {
+                        "train": {
+                            "reward": float(reward),
+                            "env_index": int(env_index),
+                            "episode": int(episode_indices[env_index]),
+                            "terminated": bool(terminated),
+                            "truncated": bool(truncated),
+                        },
+                        "reward_components": reward_components if isinstance(reward_components, dict) else {},
+                    },
+                    step=step_count + 1,
                 )
                 next_obs = np.asarray(next_obs, dtype=np.float32).reshape(-1)
                 episode_builders[env_index].add(obs, action, float(reward), next_obs, bool(terminated), bool(truncated))
@@ -323,23 +348,25 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
                 if bool(terminated) or bool(truncated):
                     replay.add_episode(**episode_builders[env_index].to_episode_arrays())
                     episode_builders[env_index].clear()
-                    episode_returns.append(float(running_returns[env_index]))
+                    episode_return = float(running_returns[env_index])
+                    episode_length = int(running_lengths[env_index])
+                    episode_returns.append(episode_return)
                     episode_lengths.append(int(running_lengths[env_index]))
-                    episode_records.append(
-                        episode_artifact_record(
-                            env_index=env_index,
-                            episode=episode_indices[env_index],
-                            episode_return=running_returns[env_index],
-                            episode_length=running_lengths[env_index],
-                            terminated=bool(terminated),
-                            truncated=bool(truncated),
-                            termination_reason=termination_reason_from_step_info(step_info, terminated=bool(terminated), truncated=bool(truncated)),
-                            ip_errors=running_ip_errors[env_index],
-                            shape_errors=running_shape_errors[env_index],
-                            boundary_failure_steps=running_boundary_failure_steps[env_index],
-                            reset_record=reset_metadata[env_index],
-                        )
+                    episode_record = episode_artifact_record(
+                        env_index=env_index,
+                        episode=episode_indices[env_index],
+                        episode_return=running_returns[env_index],
+                        episode_length=running_lengths[env_index],
+                        terminated=bool(terminated),
+                        truncated=bool(truncated),
+                        termination_reason=termination_reason_from_step_info(step_info, terminated=bool(terminated), truncated=bool(truncated)),
+                        ip_errors=running_ip_errors[env_index],
+                        shape_errors=running_shape_errors[env_index],
+                        boundary_failure_steps=running_boundary_failure_steps[env_index],
+                        reset_record=reset_metadata[env_index],
                     )
+                    episode_records.append(episode_record)
+                    wandb_logger.log_episode({**episode_record, "return": episode_return, "length": episode_length}, step=step_count)
                     episode_indices[env_index] += 1
                     running_returns[env_index] = 0.0
                     running_lengths[env_index] = 0
@@ -433,6 +460,7 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
                     interval_returns = interval_eval["returns"]
                     interval_mean = float(np.mean(interval_returns)) if interval_returns else 0.0
                     eval_history.append({"step": step_count, "returns": interval_returns, "mean_return": interval_mean, "tracking_diagnostics": interval_eval["tracking_diagnostics"]})
+                    wandb_logger.log_eval({"mean_return": interval_mean, "tracking_diagnostics": interval_eval["tracking_diagnostics"]}, step=step_count)
                     if cfg.checkpoint_dir is not None and interval_mean > best_eval_score:
                         best_eval_score = interval_mean
                         best_checkpoint_path = _save_tcv_checkpoint(
@@ -508,7 +536,51 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
                         training_contract=training_contract,
                         path=Path(cfg.checkpoint_dir) / cfg.latest_checkpoint_name,
                     )
+                progress.update(
+                    step_count,
+                    status=_tcv_progress_status(
+                        replay_episodes=replay.size,
+                        replay_transitions=replay.total_transitions,
+                        update_count=update_index,
+                        critic_loss=critic_losses[-1] if critic_losses else None,
+                        actor_loss=actor_losses[-1] if actor_losses else None,
+                        episodes=len(episode_returns),
+                    ),
+                )
+                wandb_logger.log(
+                    {
+                        "train": _tcv_progress_status(
+                            replay_episodes=replay.size,
+                            replay_transitions=replay.total_transitions,
+                            update_count=update_index,
+                            critic_loss=critic_losses[-1] if critic_losses else None,
+                            actor_loss=actor_losses[-1] if actor_losses else None,
+                            episodes=len(episode_returns),
+                        ),
+                        "mpo": {
+                            "temperature_loss": mpo_temperature_losses[-1] if mpo_temperature_losses else None,
+                            "temperature": mpo_temperatures[-1] if mpo_temperatures else None,
+                            "mean_kl": mpo_mean_kls[-1] if mpo_mean_kls else None,
+                            "std_kl": mpo_std_kls[-1] if mpo_std_kls else None,
+                            "kl_dual_loss": mpo_kl_dual_losses[-1] if mpo_kl_dual_losses else None,
+                            "mean_kl_penalty": mpo_mean_kl_penalties[-1] if mpo_mean_kl_penalties else None,
+                            "std_kl_penalty": mpo_std_kl_penalties[-1] if mpo_std_kl_penalties else None,
+                            "valid_steps": valid_steps_per_update[-1] if valid_steps_per_update else None,
+                        },
+                    },
+                    step=step_count,
+                )
     finally:
+        progress.close(
+            status=_tcv_progress_status(
+                replay_episodes=replay.size,
+                replay_transitions=replay.total_transitions,
+                update_count=update_index,
+                critic_loss=critic_losses[-1] if critic_losses else None,
+                actor_loss=actor_losses[-1] if actor_losses else None,
+                episodes=len(episode_returns),
+            )
+        )
         reward_writer.close()
         for env in envs:
             env.close()
@@ -574,6 +646,7 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
     evaluation_time_s += time.perf_counter() - eval_t0
     eval_returns = final_eval["returns"]
     final_mean = float(np.mean(eval_returns)) if eval_returns else 0.0
+    wandb_logger.log_eval({"mean_return": final_mean, "tracking_diagnostics": final_eval["tracking_diagnostics"]}, step=step_count)
     if cfg.checkpoint_dir is not None and final_mean > best_eval_score:
         best_eval_score = final_mean
         best_checkpoint_path = _save_tcv_checkpoint(
@@ -692,6 +765,34 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
         ),
         device_metadata=device_selection.to_metadata(),
     )
+    wandb_logger.log_final(
+        {
+            "total_steps": int(step_count),
+            "replay_episodes": int(replay.size),
+            "replay_transitions": int(replay.total_transitions),
+            "critic_updates": len(critic_losses),
+            "actor_updates": len(actor_losses),
+            "mpo_kl_dual_updates": len(mpo_kl_dual_losses),
+            "last_critic_loss": float(critic_losses[-1]) if critic_losses else None,
+            "last_actor_loss": float(actor_losses[-1]) if actor_losses else None,
+            "last_mpo_temperature": float(mpo_temperatures[-1]) if mpo_temperatures else None,
+            "last_mpo_mean_kl": float(mpo_mean_kls[-1]) if mpo_mean_kls else None,
+            "last_mpo_std_kl": float(mpo_std_kls[-1]) if mpo_std_kls else None,
+            "eval_mean_return": final_mean,
+            "tracking_diagnostics": diagnostics.summary(),
+            "eval_tracking_diagnostics": final_eval["tracking_diagnostics"],
+        },
+        artifact_paths={
+            "metrics": metrics_json,
+            "losses": losses_csv,
+            "checkpoint": checkpoint_path,
+            "latest_checkpoint": latest_checkpoint_path,
+            "best_checkpoint": best_checkpoint_path,
+            "best_actor_export": best_actor_export_dir,
+        },
+        step=step_count,
+    )
+    wandb_logger.close()
     return TCVStyleTrainingResult(
         total_steps=step_count,
         replay_episodes=replay.size,
@@ -998,6 +1099,25 @@ def _bounded_update_count(requested: int, cfg: TCVStyleTrainerConfig) -> int:
     if cfg.max_learner_catchup_updates is not None:
         count = min(count, int(cfg.max_learner_catchup_updates))
     return count
+
+
+def _tcv_progress_status(
+    *,
+    replay_episodes: int,
+    replay_transitions: int,
+    update_count: int,
+    critic_loss: float | None = None,
+    actor_loss: float | None = None,
+    episodes: int | None = None,
+) -> dict[str, object]:
+    return {
+        "episodes": episodes,
+        "replay_ep": int(replay_episodes),
+        "replay_steps": int(replay_transitions),
+        "updates": int(update_count),
+        "critic": critic_loss,
+        "actor": actor_loss,
+    }
 
 
 def _inverse_softplus(value: float) -> float:

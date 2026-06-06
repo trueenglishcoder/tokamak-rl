@@ -214,6 +214,8 @@ python scripts/train.py   --config configs/experiments/t15md_training_real_repla
 
 This trainer uses a deployable feedforward actor and twin recurrent critics during training. Its update rule is `tcv_mpo_recurrent_actor_critic_v1`, with sampled-action MPO policy improvement, KL-constrained actor fitting, and recurrent critic updates over sequence chunks. Use `--device cpu`, `--device cuda`, or `--device auto` to control learner placement. Use `--process-envs --num-envs N` to run each real tokamak-sim training environment in its own CPU worker process while the main process batches actor inference and learner updates. It writes training metrics and losses when `--output-dir` is set, including device and throughput fields, and writes final/latest/best checkpoints when `--checkpoint-dir` is set. For real tokamak environments that expose the training contract, checkpointed runs also export `exports/best_actor/` from the selected `best.pt` checkpoint.
 
+The training CLI shows a terminal progress bar by default with step count, percent complete, step rate, ETA, replay/update counts, episode count, and latest losses. Use `--no-progress` for log-only or noninteractive runs.
+
 Validation randomization is explicit. Set `evaluation.randomization_mode: clean` to run deterministic validation with simulator realism disabled and a disabled `DomainRandomizer`, or `configured` to reuse the experiment randomization settings. The CLI override is `--eval-randomization-mode clean|configured`.
 
 Resume from a checkpoint:
@@ -285,6 +287,8 @@ Use `--max-step-checkpoints N` or `artifacts.max_step_checkpoints` to retain onl
 
 The training CLI prints steps, replay size or replay episode counts, latest losses, evaluation returns, final/latest/best checkpoint paths, and metrics path.
 For exported runs it also prints `best_actor_export=...` and records `best_actor_export_dir` in `metrics.json`.
+
+Optional W&B logging is enabled with `--wandb` or a top-level experiment YAML `wandb:` block. The trainer logs scalar train rewards, reward components, replay/update counters, critic and actor losses, TCV-style MPO diagnostics, per-episode summaries, deterministic evaluation summaries, and final metrics. By default W&B artifact logging uploads the final metrics/losses files plus checkpoint/export paths that exist; disable that with `--wandb-no-artifacts` or `wandb.log_artifacts: false` when checkpoints are too large. Use `--wandb-mode offline` for server runs that should sync later, and `--wandb-log-interval-steps N` to reduce scalar logging frequency.
 
 ## Export A Policy
 

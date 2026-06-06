@@ -24,7 +24,9 @@ from tokamak_rl.training.diagnostics import (
 )
 from tokamak_rl.training.device import resolve_training_device
 from tokamak_rl.training.export_artifacts import export_best_actor_artifact
+from tokamak_rl.training.progress import TrainingProgressBar
 from tokamak_rl.training.replay_buffer import ReplayBatch, ReplayBuffer
+from tokamak_rl.training.wandb_logging import WandBConfig, WandBLogger
 
 
 EnvFactory = Callable[[], object]
@@ -60,6 +62,8 @@ class SimpleTrainerConfig:
     max_step_checkpoints: int | None = None
     resume_checkpoint: Path | None = None
     device: str = "cpu"
+    progress: bool = False
+    wandb: WandBConfig = field(default_factory=WandBConfig)
     export_best_actor: bool = True
     run_metadata: dict[str, object] = field(default_factory=dict)
 
@@ -185,6 +189,13 @@ def train_simple_actor_critic(env_factory: EnvFactory, cfg: SimpleTrainerConfig,
     best_checkpoint_path: Path | None = None
     latest_checkpoint_path: Path | None = None
     reward_writer = RewardComponentWriter(cfg.output_dir)
+    progress = TrainingProgressBar(total_steps=int(cfg.total_steps), label="simple", enabled=bool(cfg.progress))
+    wandb_logger = WandBLogger(
+        cfg.wandb,
+        config=_checkpoint_safe_config(cfg),
+        run_metadata={**json_safe(cfg.run_metadata), "device": device_selection.to_metadata(), "trainer": "simple_actor_critic_v1"},
+    )
+    progress.update(0, status=_simple_progress_status(replay_size=0, update_count=0), force=True)
 
     try:
         while step_count < int(cfg.total_steps):
@@ -215,11 +226,25 @@ def train_simple_actor_critic(env_factory: EnvFactory, cfg: SimpleTrainerConfig,
                 env_step_time_s += step_elapsed
                 collection_time_s += step_elapsed
                 diagnostics.record_step_info(step_info)
+                reward_components = step_info.get("reward_components") if isinstance(step_info, dict) else None
                 reward_writer.record(
                     step=step_count + 1,
                     env_index=env_index,
                     episode=episode_indices[env_index],
-                    components=step_info.get("reward_components") if isinstance(step_info, dict) else None,
+                    components=reward_components,
+                )
+                wandb_logger.log(
+                    {
+                        "train": {
+                            "reward": float(reward),
+                            "env_index": int(env_index),
+                            "episode": int(episode_indices[env_index]),
+                            "terminated": bool(terminated),
+                            "truncated": bool(truncated),
+                        },
+                        "reward_components": reward_components if isinstance(reward_components, dict) else {},
+                    },
+                    step=step_count + 1,
                 )
                 next_obs = np.asarray(next_obs, dtype=np.float32).reshape(-1)
                 replay.add(obs, action, float(reward), next_obs, bool(terminated), bool(truncated))
@@ -268,6 +293,7 @@ def train_simple_actor_critic(env_factory: EnvFactory, cfg: SimpleTrainerConfig,
                     interval_returns = interval_eval["returns"]
                     interval_mean = float(np.mean(interval_returns)) if interval_returns else 0.0
                     eval_history.append({"step": step_count, "returns": interval_returns, "mean_return": interval_mean, "tracking_diagnostics": interval_eval["tracking_diagnostics"]})
+                    wandb_logger.log_eval({"mean_return": interval_mean, "tracking_diagnostics": interval_eval["tracking_diagnostics"]}, step=step_count)
                     if cfg.checkpoint_dir is not None and interval_mean > best_eval_score:
                         best_eval_score = interval_mean
                         best_checkpoint_path = save_training_checkpoint(
@@ -331,23 +357,25 @@ def train_simple_actor_critic(env_factory: EnvFactory, cfg: SimpleTrainerConfig,
                         path=Path(cfg.checkpoint_dir) / cfg.latest_checkpoint_name,
                     )
                 if bool(terminated) or bool(truncated):
-                    episode_returns.append(float(running_returns[env_index]))
+                    episode_return = float(running_returns[env_index])
+                    episode_length = int(running_lengths[env_index])
+                    episode_returns.append(episode_return)
                     episode_lengths.append(int(running_lengths[env_index]))
-                    episode_records.append(
-                        episode_artifact_record(
-                            env_index=env_index,
-                            episode=episode_indices[env_index],
-                            episode_return=running_returns[env_index],
-                            episode_length=running_lengths[env_index],
-                            terminated=bool(terminated),
-                            truncated=bool(truncated),
-                            termination_reason=termination_reason_from_step_info(step_info, terminated=bool(terminated), truncated=bool(truncated)),
-                            ip_errors=running_ip_errors[env_index],
-                            shape_errors=running_shape_errors[env_index],
-                            boundary_failure_steps=running_boundary_failure_steps[env_index],
-                            reset_record=reset_metadata[env_index],
-                        )
+                    episode_record = episode_artifact_record(
+                        env_index=env_index,
+                        episode=episode_indices[env_index],
+                        episode_return=running_returns[env_index],
+                        episode_length=running_lengths[env_index],
+                        terminated=bool(terminated),
+                        truncated=bool(truncated),
+                        termination_reason=termination_reason_from_step_info(step_info, terminated=bool(terminated), truncated=bool(truncated)),
+                        ip_errors=running_ip_errors[env_index],
+                        shape_errors=running_shape_errors[env_index],
+                        boundary_failure_steps=running_boundary_failure_steps[env_index],
+                        reset_record=reset_metadata[env_index],
                     )
+                    episode_records.append(episode_record)
+                    wandb_logger.log_episode({**episode_record, "return": episode_return, "length": episode_length}, step=step_count)
                     episode_indices[env_index] += 1
                     reset_obs, reset_info = env.reset(seed=int(cfg.seed) + 10_000 + step_count + env_index)
                     diagnostics.record_reset_info(reset_info)
@@ -361,6 +389,28 @@ def train_simple_actor_critic(env_factory: EnvFactory, cfg: SimpleTrainerConfig,
                     running_ip_errors[env_index].clear()
                     running_shape_errors[env_index].clear()
                     running_boundary_failure_steps[env_index] = 0
+                progress.update(
+                    step_count,
+                    status=_simple_progress_status(
+                        replay_size=replay.size,
+                        update_count=update_index,
+                        critic_loss=critic_losses[-1] if critic_losses else None,
+                        actor_loss=actor_losses[-1] if actor_losses else None,
+                        episodes=len(episode_returns),
+                    ),
+                )
+                wandb_logger.log(
+                    {
+                        "train": _simple_progress_status(
+                            replay_size=replay.size,
+                            update_count=update_index,
+                            critic_loss=critic_losses[-1] if critic_losses else None,
+                            actor_loss=actor_losses[-1] if actor_losses else None,
+                            episodes=len(episode_returns),
+                        )
+                    },
+                    step=step_count,
+                )
         for env_index, length in enumerate(running_lengths):
             if int(length) > 0:
                 episode_returns.append(float(running_returns[env_index]))
@@ -381,6 +431,15 @@ def train_simple_actor_critic(env_factory: EnvFactory, cfg: SimpleTrainerConfig,
                     )
                 )
     finally:
+        progress.close(
+            status=_simple_progress_status(
+                replay_size=replay.size,
+                update_count=update_index,
+                critic_loss=critic_losses[-1] if critic_losses else None,
+                actor_loss=actor_losses[-1] if actor_losses else None,
+                episodes=len(episode_returns),
+            )
+        )
         reward_writer.close()
         for env in envs:
             env.close()
@@ -390,6 +449,7 @@ def train_simple_actor_critic(env_factory: EnvFactory, cfg: SimpleTrainerConfig,
     evaluation_time_s += time.perf_counter() - eval_t0
     eval_returns = final_eval["returns"]
     final_mean = float(np.mean(eval_returns)) if eval_returns else 0.0
+    wandb_logger.log_eval({"mean_return": final_mean, "tracking_diagnostics": final_eval["tracking_diagnostics"]}, step=step_count)
     if cfg.checkpoint_dir is not None and final_mean > best_eval_score:
         best_eval_score = final_mean
         best_checkpoint_path = save_training_checkpoint(
@@ -487,6 +547,29 @@ def train_simple_actor_critic(env_factory: EnvFactory, cfg: SimpleTrainerConfig,
         ),
         device_metadata=device_selection.to_metadata(),
     )
+    wandb_logger.log_final(
+        {
+            "total_steps": int(step_count),
+            "replay_size": int(replay.size),
+            "critic_updates": len(critic_losses),
+            "actor_updates": len(actor_losses),
+            "last_critic_loss": float(critic_losses[-1]) if critic_losses else None,
+            "last_actor_loss": float(actor_losses[-1]) if actor_losses else None,
+            "eval_mean_return": final_mean,
+            "tracking_diagnostics": diagnostics.summary(),
+            "eval_tracking_diagnostics": final_eval["tracking_diagnostics"],
+        },
+        artifact_paths={
+            "metrics": metrics_json,
+            "losses": losses_csv,
+            "checkpoint": checkpoint_path,
+            "latest_checkpoint": latest_checkpoint_path,
+            "best_checkpoint": best_checkpoint_path,
+            "best_actor_export": best_actor_export_dir,
+        },
+        step=step_count,
+    )
+    wandb_logger.close()
     return TrainingResult(
         total_steps=int(step_count),
         replay_size=replay.size,
@@ -541,6 +624,23 @@ def evaluate_actor_detailed(env_factory: EnvFactory, actor: FeedForwardActor, *,
     finally:
         actor.train(was_training)
     return {"returns": returns, "tracking_diagnostics": diagnostics.summary()}
+
+
+def _simple_progress_status(
+    *,
+    replay_size: int,
+    update_count: int,
+    critic_loss: float | None = None,
+    actor_loss: float | None = None,
+    episodes: int | None = None,
+) -> dict[str, object]:
+    return {
+        "episodes": episodes,
+        "replay": int(replay_size),
+        "updates": int(update_count),
+        "critic": critic_loss,
+        "actor": actor_loss,
+    }
 
 
 def save_training_checkpoint(

@@ -391,6 +391,8 @@ simple
 tcv_style
 ```
 
+CLI training runs show a dependency-free terminal progress bar by default. The bar reports step count, percent complete, step rate, ETA, replay/update counts, episode count, and latest losses; `--no-progress` disables it for log-only runs.
+
 The simple actor-critic path uses `FeedForwardActor`, two `FeedForwardQCritic` instances, target networks, a circular transition replay buffer, random warmup actions, deterministic actor actions with optional Gaussian exploration noise, delayed actor updates, soft target updates, vectorized synchronous environments, checkpoint writing, metrics JSON, losses CSV, and checkpoint resume.
 
 The TCV-style path uses a feedforward actor with twin recurrent critics. It stores complete episodes, samples padded sequence chunks, applies masked recurrent MPO updates, samples stochastic actor actions after warmup, runs updates after completed episodes, writes checkpoints, writes metrics JSON and losses CSV, supports periodic evaluation, and supports checkpoint resume.

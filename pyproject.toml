@@ -28,6 +28,10 @@ dev = [
 train = [
   "torch>=2.2",
   "tensorboard>=2.15",
+  "wandb>=0.16",
+]
+wandb = [
+  "wandb>=0.16",
 ]
 
 [project.scripts]

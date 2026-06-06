@@ -12,6 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback is tested instead.
 from tokamak_rl.env import EnvConfig, TerminationConfig
 from tokamak_rl.randomization import DomainRandomizer
 from tokamak_rl.rewards import JointCurrentBoundaryReward
+from tokamak_rl.training.wandb_logging import WandBConfig
 from tokamak_control.realism import ActuatorRealismSettings, SensorRealismSettings
 
 
@@ -27,6 +28,7 @@ class ExperimentConfig:
     evaluation: ExperimentEvaluationConfig
     training: ExperimentTrainingConfig
     artifacts: ExperimentArtifactConfig
+    wandb: WandBConfig
     reward_config_path: Path | None
     randomization_config_path: Path | None
 
@@ -85,7 +87,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     """Load an experiment YAML and referenced reward/randomization YAML files."""
     source_path = Path(path).expanduser().resolve()
     raw = _load_yaml_mapping(source_path)
-    _reject_unknown(raw, {"name", "sim", "reward_config", "randomization_config", "evaluation", "training", "artifacts"}, "experiment")
+    _reject_unknown(raw, {"name", "sim", "reward_config", "randomization_config", "evaluation", "training", "artifacts", "wandb"}, "experiment")
     name = _require_str(raw, "name")
     env = _load_env_config(_require_mapping(raw, "sim"), base_dir=source_path.parent)
 
@@ -96,6 +98,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     evaluation = _load_evaluation_config(raw.get("evaluation", {}))
     training = _load_training_config(raw.get("training", {}))
     artifacts = _load_artifact_config(raw.get("artifacts", {}), base_dir=source_path.parent)
+    wandb = _load_wandb_config(raw.get("wandb", {}))
     return ExperimentConfig(
         name=name,
         source_path=source_path,
@@ -105,6 +108,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         evaluation=evaluation,
         training=training,
         artifacts=artifacts,
+        wandb=wandb,
         reward_config_path=reward_path,
         randomization_config_path=randomization_path,
     )
@@ -136,6 +140,32 @@ def _load_artifact_config(value: object, *, base_dir: Path) -> ExperimentArtifac
         checkpoint_interval_steps=None if value.get("checkpoint_interval_steps") is None else _positive_int(value.get("checkpoint_interval_steps"), "artifacts.checkpoint_interval_steps"),
         max_step_checkpoints=None if value.get("max_step_checkpoints") is None else _positive_int(value.get("max_step_checkpoints"), "artifacts.max_step_checkpoints"),
         export_best_actor=_bool(value.get("export_best_actor", True), "artifacts.export_best_actor"),
+    )
+
+
+def _load_wandb_config(value: object) -> WandBConfig:
+    if not isinstance(value, dict):
+        raise ValueError("wandb must be a mapping")
+    _reject_unknown(value, {"enabled", "project", "entity", "name", "group", "mode", "tags", "log_interval_steps", "log_artifacts"}, "wandb")
+    tags_raw = value.get("tags", ())
+    if tags_raw is None:
+        tags: tuple[str, ...] = ()
+    elif isinstance(tags_raw, str):
+        tags = tuple(part.strip() for part in tags_raw.split(",") if part.strip())
+    elif isinstance(tags_raw, (list, tuple)):
+        tags = tuple(str(item) for item in tags_raw)
+    else:
+        raise ValueError("wandb.tags must be a string or sequence of strings")
+    return WandBConfig(
+        enabled=_bool(value.get("enabled", False), "wandb.enabled"),
+        project=str(value.get("project", "tokamak-rl")),
+        entity=None if value.get("entity") is None else str(value.get("entity")),
+        name=None if value.get("name") is None else str(value.get("name")),
+        group=None if value.get("group") is None else str(value.get("group")),
+        mode=str(value.get("mode", "online")),
+        tags=tags,
+        log_interval_steps=_positive_int(value.get("log_interval_steps", 1), "wandb.log_interval_steps"),
+        log_artifacts=_bool(value.get("log_artifacts", True), "wandb.log_artifacts"),
     )
 
 

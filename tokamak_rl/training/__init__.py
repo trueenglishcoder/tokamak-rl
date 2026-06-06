@@ -19,6 +19,7 @@ from tokamak_rl.training.tcv_style_actor_critic import (
     evaluate_tcv_actor_detailed,
     train_tcv_style_actor_critic,
 )
+from tokamak_rl.training.wandb_logging import WandBConfig, WandBLogger
 
 
 __all__ = [
@@ -33,6 +34,8 @@ __all__ = [
     "TCVStyleTrainerConfig",
     "TCVStyleTrainingResult",
     "TrainingResult",
+    "WandBConfig",
+    "WandBLogger",
     "evaluate_actor",
     "evaluate_actor_detailed",
     "evaluate_tcv_actor",
