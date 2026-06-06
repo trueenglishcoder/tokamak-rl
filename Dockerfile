@@ -1,6 +1,7 @@
 FROM python:3.11-bookworm
 
-ARG PYTORCH_INDEX_URL=""
+ARG PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cu121"
+ARG PYTORCH_VERSION="2.5.1+cu121"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -21,10 +22,9 @@ COPY tokamak-rl/configs ./tokamak-rl/configs
 RUN python -m pip install --upgrade pip \
     && python -m pip install ./tokamak-sim \
     && if [ -n "$PYTORCH_INDEX_URL" ]; then \
-        python -m pip install --extra-index-url "$PYTORCH_INDEX_URL" './tokamak-rl[train]'; \
-    else \
-        python -m pip install './tokamak-rl[train]'; \
-    fi
+        python -m pip install --index-url "$PYTORCH_INDEX_URL" "torch==$PYTORCH_VERSION"; \
+    fi \
+    && python -m pip install './tokamak-rl[train]'
 
 COPY tokamak-rl/tests ./tokamak-rl/tests
 
