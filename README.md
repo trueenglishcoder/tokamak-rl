@@ -157,6 +157,28 @@ wandb:
   log_artifacts: true
 ```
 
+Reward values can be searched with short controlled training runs before committing to final-length training. The search ranks candidates by deterministic evaluation diagnostics: mean normalized Ip error, mean normalized target-boundary point error, and boundary failure rate. Raw return is recorded but is not used for ranking because reward scale changes between candidates.
+
+```bash
+python scripts/search_rewards.py \
+  --config configs/experiments/t15md_training_circle_static_boundary.yaml \
+  --trainer tcv_style \
+  --steps 200 \
+  --num-envs 2 \
+  --eval-episodes 2 \
+  --eval-max-steps 100 \
+  --device cuda \
+  --output-dir outputs/reward_search_circle \
+  --max-candidates 12 \
+  --ip-weight-values 0.5,1.0,2.0 \
+  --shape-weight-values 0.5,1.0,2.0 \
+  --action-weight-values 0.001,0.01 \
+  --delta-action-weight-values 0.001,0.01 \
+  --termination-penalty-values 5.0,10.0,20.0
+```
+
+The search writes `results.csv`, `results.json`, `search_manifest.json`, per-candidate folders with `reward.yaml` and normal training artifacts, and `best_reward.yaml` for the best ranked candidate. Checkpoints are disabled by default during search; add `--save-checkpoints` only when you intentionally want candidate checkpoints.
+
 ## Current Layout
 
 ```text

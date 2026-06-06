@@ -39,6 +39,7 @@ tokamak-rl-train = "tokamak_rl.training.cli:main"
 tokamak-rl-evaluate = "tokamak_rl.evaluation.cli:main"
 tokamak-rl-rollout = "tokamak_rl.evaluation.cli:main"
 tokamak-rl-export = "tokamak_rl.export.cli:main"
+tokamak-rl-search-rewards = "tokamak_rl.training.reward_search:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tokamak_rl"]
