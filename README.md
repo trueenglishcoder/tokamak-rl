@@ -170,14 +170,20 @@ python scripts/search_rewards.py \
   --device cuda \
   --output-dir outputs/reward_search_circle \
   --max-candidates 12 \
+  --progress \
   --ip-weight-values 0.5,1.0,2.0 \
   --shape-weight-values 0.5,1.0,2.0 \
   --action-weight-values 0.001,0.01 \
   --delta-action-weight-values 0.001,0.01 \
-  --termination-penalty-values 5.0,10.0,20.0
+  --termination-penalty-values 5.0,10.0,20.0 \
+  --wandb \
+  --wandb-project tokamak-rl \
+  --wandb-name reward_search_circle \
+  --wandb-group reward_search_circle \
+  --wandb-mode online
 ```
 
-The search writes `results.csv`, `results.json`, `search_manifest.json`, per-candidate folders with `reward.yaml` and normal training artifacts, and `best_reward.yaml` for the best ranked candidate. Checkpoints are disabled by default during search; add `--save-checkpoints` only when you intentionally want candidate checkpoints.
+The search writes `results.csv`, `results.json`, `search_manifest.json`, per-candidate folders with `reward.yaml` and normal training artifacts, and `best_reward.yaml` for the best ranked candidate. Checkpoints are disabled by default during search; add `--save-checkpoints` only when you intentionally want candidate checkpoints. Use `--progress` to show the per-candidate trainer progress bars. With `--wandb`, each candidate logs as a separate W&B run under the configured group.
 
 ## Current Layout
 

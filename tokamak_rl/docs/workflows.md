@@ -290,7 +290,7 @@ For exported runs it also prints `best_actor_export=...` and records `best_actor
 
 Optional W&B logging is enabled with `--wandb` or a top-level experiment YAML `wandb:` block. The trainer logs scalar train rewards, reward components, replay/update counters, critic and actor losses, TCV-style MPO diagnostics, per-episode summaries, deterministic evaluation summaries, and final metrics. By default W&B artifact logging uploads the final metrics/losses files plus checkpoint/export paths that exist; disable that with `--wandb-no-artifacts` or `wandb.log_artifacts: false` when checkpoints are too large. Use `--wandb-mode offline` for server runs that should sync later, and `--wandb-log-interval-steps N` to reduce scalar logging frequency.
 
-`scripts/search_rewards.py` runs short candidate trainings for reward-value search. It writes one candidate directory per reward config, ranks candidates by deterministic evaluation tracking diagnostics rather than raw return, and emits `results.csv`, `results.json`, `search_manifest.json`, and `best_reward.yaml`. Candidate checkpoints are disabled unless `--save-checkpoints` is provided.
+`scripts/search_rewards.py` runs short candidate trainings for reward-value search. It writes one candidate directory per reward config, ranks candidates by deterministic evaluation tracking diagnostics rather than raw return, and emits `results.csv`, `results.json`, `search_manifest.json`, and `best_reward.yaml`. Candidate checkpoints are disabled unless `--save-checkpoints` is provided. Use `--progress` for per-candidate trainer progress bars. Use `--wandb` to log each candidate as a separate W&B run, with `--wandb-group` keeping the search together in the W&B UI.
 
 ## Export A Policy
 

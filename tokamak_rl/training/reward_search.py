@@ -21,6 +21,7 @@ from tokamak_rl.training.cli import _experiment_run_metadata, _make_env_factory,
 from tokamak_rl.training.diagnostics import json_safe
 from tokamak_rl.training.simple_actor_critic import SimpleTrainerConfig, train_simple_actor_critic
 from tokamak_rl.training.tcv_style_actor_critic import TCVStyleTrainerConfig, train_tcv_style_actor_critic
+from tokamak_rl.training.wandb_logging import WandBConfig
 
 
 REWARD_FIELDS = (
@@ -75,6 +76,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--process-envs", action="store_true", help="Run each env in a worker process.")
     parser.add_argument("--process-start-method", choices=["spawn", "fork", "forkserver"], default=None, help="Process start method for --process-envs.")
     parser.add_argument("--progress", action="store_true", help="Show per-candidate trainer progress bars.")
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging for candidate runs.")
+    parser.add_argument("--wandb-project", default=None, help="Weights & Biases project name.")
+    parser.add_argument("--wandb-entity", default=None, help="Optional Weights & Biases entity/team.")
+    parser.add_argument("--wandb-name", default=None, help="Base W&B run name; candidate index is appended.")
+    parser.add_argument("--wandb-group", default=None, help="W&B group for all candidates in this reward search.")
+    parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default=None, help="Weights & Biases mode.")
+    parser.add_argument("--wandb-tag", action="append", default=None, help="Weights & Biases tag; can be provided multiple times.")
+    parser.add_argument("--wandb-log-interval-steps", type=int, default=None, help="Environment-step interval for W&B scalar logging.")
+    parser.add_argument("--wandb-no-artifacts", action="store_true", help="Disable W&B artifact upload for candidate metrics/checkpoints/exports.")
     parser.add_argument("--save-checkpoints", action="store_true", help="Write candidate checkpoints. Disabled by default to save disk.")
     parser.add_argument("--checkpoint-interval-steps", type=int, default=None, help="Optional candidate checkpoint interval when --save-checkpoints is set.")
     parser.add_argument("--max-step-checkpoints", type=int, default=1, help="Candidate numbered checkpoint retention when --save-checkpoints is set.")
@@ -193,6 +203,8 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
         "eval_randomization_mode": eval_randomization_mode,
         "reward": asdict(candidate.reward),
     }
+    wandb = _candidate_wandb_config(args=args, experiment_name=experiment.name, candidate=candidate)
+    run_metadata["wandb"] = asdict(wandb)
     checkpoint_dir = candidate_dir / "checkpoints" if bool(args.save_checkpoints) else None
     if trainer_name == "simple":
         cfg = SimpleTrainerConfig(
@@ -211,6 +223,7 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
             eval_seed=experiment.evaluation.validation_seed,
             device=args.device if args.device is not None else experiment.training.device,
             progress=bool(args.progress),
+            wandb=wandb,
             export_best_actor=False,
             run_metadata=run_metadata,
         )
@@ -240,6 +253,7 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
             eval_seed=experiment.evaluation.validation_seed,
             device=args.device if args.device is not None else experiment.training.device,
             progress=bool(args.progress),
+            wandb=wandb,
             export_best_actor=False,
             run_metadata=run_metadata,
         )
@@ -304,6 +318,23 @@ def write_reward_config(path: Path, reward: JointCurrentBoundaryReward) -> None:
 
 def compact_reward(reward: JointCurrentBoundaryReward) -> str:
     return ", ".join(f"{field}={getattr(reward, field):g}" for field in REWARD_FIELDS)
+
+
+def _candidate_wandb_config(*, args, experiment_name: str, candidate: RewardCandidate) -> WandBConfig:
+    enabled = bool(args.wandb)
+    base_name = args.wandb_name or f"reward_search_{experiment_name}"
+    group = args.wandb_group or base_name
+    return WandBConfig(
+        enabled=enabled,
+        project=str(args.wandb_project or "tokamak-rl"),
+        entity=args.wandb_entity,
+        name=f"{base_name}_candidate_{candidate.index:04d}" if enabled else None,
+        group=group if enabled else None,
+        mode=str(args.wandb_mode or "online"),
+        tags=tuple(str(tag) for tag in (args.wandb_tag or ())),
+        log_interval_steps=int(args.wandb_log_interval_steps or 1),
+        log_artifacts=not bool(args.wandb_no_artifacts),
+    )
 
 
 def parse_float_values(raw: str | None, *, default: float) -> tuple[float, ...]:
