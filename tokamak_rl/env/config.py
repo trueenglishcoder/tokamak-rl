@@ -55,6 +55,30 @@ class ReplayInitialStateConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RangeInitialStateConfig:
+    """Generated initial-state sampling bounds derived from replay starts."""
+
+    ip: tuple[float, float]
+    pfc_currents: tuple[tuple[float, float], ...]
+    sol_currents: tuple[tuple[float, float], ...]
+    boundary_parameters: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_interval(self.ip, "range initial-state ip")
+        for bank, intervals in (("pfc_currents", self.pfc_currents), ("sol_currents", self.sol_currents)):
+            if not intervals:
+                raise ValueError(f"range initial-state {bank} requires at least one channel")
+            for index, interval in enumerate(intervals):
+                _validate_interval(interval, f"range initial-state {bank}[{index}]")
+        required = {"R0", "Z0", "A0", "kappa", "delta"}
+        missing = required.difference(self.boundary_parameters)
+        if missing:
+            raise ValueError(f"range initial-state boundary_parameters missing: {sorted(missing)}")
+        for name, interval in self.boundary_parameters.items():
+            _validate_interval(interval, f"range initial-state boundary_parameters.{name}")
+
+
+@dataclass(frozen=True, slots=True)
 class EnvConfig:
     """Configuration needed to construct a tokamak-sim backed RL environment."""
 
@@ -64,6 +88,7 @@ class EnvConfig:
     initial_coil_currents: str = "config"
     initial_ip_scale: float | None = None
     replay_initial_state: ReplayInitialStateConfig | None = None
+    range_initial_state: RangeInitialStateConfig | None = None
     scenario_name: str = "nominal"
     scenario_args: dict[str, object] = field(default_factory=dict)
     angles: int = 32
@@ -89,10 +114,12 @@ class EnvConfig:
             raise ValueError("target_preview_steps must be > 0 for observation_version 'v2'")
         if self.initial_ip is not None and not _is_finite(float(self.initial_ip)):
             raise ValueError("initial_ip must be finite when provided")
-        if str(self.initial_coil_currents) not in {"config", "zero", "sample_replay"}:
-            raise ValueError("initial_coil_currents must be 'config', 'zero', or 'sample_replay'")
+        if str(self.initial_coil_currents) not in {"config", "zero", "sample_replay", "sample_ranges"}:
+            raise ValueError("initial_coil_currents must be 'config', 'zero', 'sample_replay', or 'sample_ranges'")
         if str(self.initial_coil_currents) == "sample_replay" and self.replay_initial_state is None:
             raise ValueError("sample_replay initial_coil_currents requires replay_initial_state")
+        if str(self.initial_coil_currents) == "sample_ranges" and self.range_initial_state is None:
+            raise ValueError("sample_ranges initial_coil_currents requires range_initial_state")
         if self.initial_ip_scale is not None:
             scale = float(self.initial_ip_scale)
             if not _is_finite(scale) or scale <= 0.0:
@@ -101,3 +128,14 @@ class EnvConfig:
 
 def _is_finite(value: float) -> bool:
     return value == value and value not in {float("inf"), float("-inf")}
+
+
+def _validate_interval(interval: tuple[float, float], name: str) -> None:
+    if len(interval) != 2:
+        raise ValueError(f"{name} must contain two values")
+    low = float(interval[0])
+    high = float(interval[1])
+    if not (_is_finite(low) and _is_finite(high)):
+        raise ValueError(f"{name} bounds must be finite")
+    if low > high:
+        raise ValueError(f"{name} min must be <= max")

@@ -43,7 +43,7 @@ class TokamakRLEnv:
         from tokamak_control.bridge import InitialStateOverride, SimulationSession
 
         _ = options
-        initial_currents_path, initial_ip, initial_metadata = self._initial_state_for_reset(seed)
+        initial_currents_path, initial_ip, initial_metadata, initial_pfc_currents, initial_sol_currents = self._initial_state_for_reset(seed)
         scenario_args, reference_metadata = self._scenario_args_for_reset(seed, initial_metadata=initial_metadata)
         randomization_sample = self.randomizer.sample_episode(seed=seed)
         randomization_metadata = dict(randomization_sample.metadata)
@@ -59,8 +59,14 @@ class TokamakRLEnv:
             realism_settings=randomization_sample.realism_settings,
             initial_state_override=InitialStateOverride(
                 ip=initial_ip,
-                coil_currents="config" if self.cfg.initial_coil_currents == "sample_replay" else self.cfg.initial_coil_currents,
+                coil_currents=(
+                    "explicit"
+                    if initial_pfc_currents is not None and initial_sol_currents is not None
+                    else ("config" if self.cfg.initial_coil_currents == "sample_replay" else self.cfg.initial_coil_currents)
+                ),
                 ip_scale=self.cfg.initial_ip_scale,
+                pfc_currents=initial_pfc_currents,
+                sol_currents=initial_sol_currents,
             ),
         )
         reset = self.session.reset(seed=seed, realism_settings=randomization_sample.realism_settings)
@@ -158,17 +164,21 @@ class TokamakRLEnv:
 
     def _scenario_args_for_reset(self, seed: int | None, *, initial_metadata: dict[str, object] | None = None) -> tuple[dict[str, object], dict[str, object]]:
         args = dict(self.cfg.scenario_args)
-        if initial_metadata is not None and initial_metadata.get("mode") == "sample_replay":
+        static_boundary_from_initial = bool(args.pop("boundary_static_from_initial_state", False))
+        if initial_metadata is not None and initial_metadata.get("mode") in {"sample_replay", "sample_ranges"}:
             if self.cfg.scenario_name == "t15_synthetic_follow":
                 args["ip_start"] = float(initial_metadata["initial_ip"])
                 boundary_initial = initial_metadata.get("initial_boundary_parameters")
-                if isinstance(boundary_initial, dict) and str(args.get("boundary_kind", "generated_parameters")) == "generated_parameters":
-                    args["boundary_initial_parameters"] = _clip_boundary_parameters_to_bounds(
-                        dict(boundary_initial),
-                        args.get("boundary_bounds"),
-                    )
+                if isinstance(boundary_initial, dict):
+                    if static_boundary_from_initial and str(args.get("boundary_kind", "generated_parameters")) == "static_parameters":
+                        args["boundary_parameters"] = dict(boundary_initial)
+                    elif str(args.get("boundary_kind", "generated_parameters")) == "generated_parameters":
+                        args["boundary_initial_parameters"] = _clip_boundary_parameters_to_bounds(
+                            dict(boundary_initial),
+                            args.get("boundary_bounds"),
+                        )
         if self.cfg.scenario_name != "t15_synthetic_follow" or not self.cfg.resample_references_on_reset:
-            return args, {"reference_resampling_enabled": False}
+            return args, {"reference_resampling_enabled": False, "boundary_static_from_initial_state": static_boundary_from_initial}
 
         episode_seed = int(self._reset_count if seed is None else seed)
         base_shape_seed = _coerce_seed(args.get("seed", 0), "scenario_args.seed")
@@ -184,16 +194,41 @@ class TokamakRLEnv:
             "reference_episode_seed": episode_seed,
             "reference_effective_seed": shape_seed,
             "reference_effective_ip_seed": ip_seed,
+            "boundary_static_from_initial_state": static_boundary_from_initial,
         }
 
     def _initial_state_for_reset(self, seed: int | None):
+        if self.cfg.initial_coil_currents == "sample_ranges":
+            if self.cfg.range_initial_state is None:
+                raise RuntimeError("sample_ranges initial state requires range_initial_state config")
+            episode_seed = int(self._reset_count if seed is None else seed)
+            rng = np.random.default_rng(episode_seed + 9_104_729)
+            ranges = self.cfg.range_initial_state
+            initial_ip = _sample_interval(rng, ranges.ip)
+            pfc_currents = np.asarray([_sample_interval(rng, item) for item in ranges.pfc_currents], dtype=float)
+            sol_currents = np.asarray([_sample_interval(rng, item) for item in ranges.sol_currents], dtype=float)
+            boundary_parameters = {
+                name: _sample_interval(rng, interval)
+                for name, interval in ranges.boundary_parameters.items()
+            }
+            metadata = {
+                "mode": "sample_ranges",
+                "shot": "synthetic",
+                "initial_currents_path": None,
+                "initial_ip": float(initial_ip),
+                "initial_pfc_currents": pfc_currents.tolist(),
+                "initial_sol_currents": sol_currents.tolist(),
+                "initial_boundary_parameters": boundary_parameters,
+            }
+            return self.cfg.initial_currents_path, float(initial_ip), metadata, pfc_currents, sol_currents
+
         if self.cfg.initial_coil_currents != "sample_replay":
             return self.cfg.initial_currents_path, self.cfg.initial_ip, {
                 "mode": str(self.cfg.initial_coil_currents),
                 "shot": None,
                 "initial_currents_path": None if self.cfg.initial_currents_path is None else str(self.cfg.initial_currents_path),
                 "initial_ip": None if self.cfg.initial_ip is None else float(self.cfg.initial_ip),
-            }
+            }, None, None
         if self.cfg.replay_initial_state is None:
             raise RuntimeError("sample_replay initial state requires replay_initial_state config")
         candidates = self.cfg.replay_initial_state.candidates
@@ -207,7 +242,7 @@ class TokamakRLEnv:
             "initial_ip": float(candidate.initial_ip),
             "initial_boundary_parameters": dict(candidate.initial_boundary_parameters),
         }
-        return candidate.initial_currents_path, float(candidate.initial_ip), metadata
+        return candidate.initial_currents_path, float(candidate.initial_ip), metadata, None, None
 
     def close(self) -> None:
         if self.session is not None:
@@ -229,6 +264,7 @@ class TokamakRLEnv:
                 "config_path": str(self.cfg.sim_config_path),
                 "initial_currents_path": None if self.cfg.initial_currents_path is None else str(self.cfg.initial_currents_path),
                 "replay_initial_state_candidates": 0 if self.cfg.replay_initial_state is None else len(self.cfg.replay_initial_state.candidates),
+                "range_initial_state_enabled": self.cfg.range_initial_state is not None,
                 "boundary_mode": str(machine.boundary_mode),
                 "limiter_name": machine.limiter_name,
                 "t_step": float(machine.t_step),
@@ -404,3 +440,11 @@ def _margin_below(margin: np.ndarray | None, threshold: float) -> bool:
     if finite.size == 0:
         return False
     return bool(np.any(finite < float(threshold)))
+
+
+def _sample_interval(rng: np.random.Generator, interval: tuple[float, float]) -> float:
+    low = float(interval[0])
+    high = float(interval[1])
+    if low == high:
+        return low
+    return float(rng.uniform(low, high))

@@ -1,4 +1,4 @@
-name: t15md_training_real_replay_like
+name: t15md_training_keep_initial_boundary
 sim:
   config_path: ../tokamak-sim/configs/T15MD_new_data.toml
   initial_currents_path: null
@@ -77,29 +77,7 @@ sim:
       hold_probability: 0.35
       start: 0.0
     boundary:
-      kind: generated_parameters
-      bounds:
-        R0:
-          min: 1.3266
-          max: 1.4756
-        Z0:
-          min: -0.0496
-          max: 0.0137
-        A0:
-          min: 0.5200
-          max: 0.6641
-        kappa:
-          min: 1.1108
-          max: 1.4966
-        delta:
-          min: 0.0992
-          max: 0.3656
-      rate_limits:
-        R0: 0.30
-        Z0: 0.70
-        A0: 0.45
-        kappa: 1.20
-        delta: 0.80
+      kind: static_initial_parameters
   angles: 32
   max_episode_steps: 1000
   realism_enabled: true
@@ -124,4 +102,4 @@ evaluation:
   validation_seed: 9000
 training:
   enabled: false
-  note: real-replay-like trajectory preset with generated replay-bounded initial Ip/current/boundary states and segmented Ip targets
+  note: replay-bounded initial state with segmented Ip target and static reference boundary held at the sampled initial boundary

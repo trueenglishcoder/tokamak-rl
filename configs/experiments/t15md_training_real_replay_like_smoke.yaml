@@ -3,12 +3,58 @@ sim:
   config_path: ../tokamak-sim/configs/T15MD_new_data.toml
   initial_currents_path: null
   initial_state:
-    ip: sample_replay
-    coil_currents: sample_replay
+    ip: sample_ranges
+    coil_currents: sample_ranges
     ip_scale: 500000.0
-    replay:
-      initial_currents_glob: ../tokamak-sim/configs/initial_currents/T15MD_new_data_38*.toml
-      boundary_parameters_glob: ../tokamak-sim/output/t15_boundary_parameters/simulated_replay_*_boundary_params.csv
+    ranges:
+      ip:
+        min: 124750.45168962443
+        max: 124967.92554755499
+      pfc_currents:
+        pfc0:
+          min: -19945.58846153846
+          max: -18224.476923076923
+        pfc1:
+          min: 68838.56923076924
+          max: 73185.18461538461
+        pfc2:
+          min: 26700.725538461535
+          max: 29366.630769230767
+        pfc3:
+          min: 33206.77615384615
+          max: 36397.403076923074
+        pfc4:
+          min: 86235.32307692307
+          max: 92392.70769230768
+        pfc5:
+          min: -147676.79076923075
+          max: -129260.08246153848
+      sol_currents:
+        sol0:
+          min: 565568.5834615383
+          max: 692223.8407692304
+        sol1:
+          min: 1238496.6153846174
+          max: 1493497.703846153
+        sol2:
+          min: 583331.4103846158
+          max: 707710.2265384617
+      boundary_parameters:
+        R0:
+          min: 1.4101200630345005
+          max: 1.4316390436922017
+        Z0:
+          min: -0.007414581445590505
+          max: -0.0034510165353685133
+        A0:
+          min: 0.6088247420590857
+          max: 0.6292987997843181
+        kappa:
+          min: 1.1120020187817363
+          max: 1.1353543065348441
+        delta:
+          min: 0.0993730470809749
+          max: 0.10926110642805169
   reference_source:
     kind: t15_synthetic_follow
     preset: t15_real_replay_like_smoke
@@ -38,10 +84,10 @@ sim:
           min: 0.5200
           max: 0.6641
         kappa:
-          min: 1.1212
+          min: 1.1108
           max: 1.4966
         delta:
-          min: 0.1044
+          min: 0.0992
           max: 0.3656
       rate_limits:
         R0: 0.30

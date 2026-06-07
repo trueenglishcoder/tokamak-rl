@@ -120,7 +120,7 @@ def test_tokamak_env_reset_can_start_from_zero_ip_and_zero_coils(tmp_path: Path)
     env.close()
 
 
-def test_tokamak_env_reset_can_sample_replay_initial_state() -> None:
+def test_tokamak_env_reset_can_sample_range_initial_state() -> None:
     experiment = load_experiment_config(Path(__file__).resolve().parents[1] / "configs/experiments/t15md_training_real_replay_like.yaml")
     env = TokamakRLEnv(
         replace(
@@ -134,13 +134,47 @@ def test_tokamak_env_reset_can_sample_replay_initial_state() -> None:
     _obs, info = env.reset(seed=123)
 
     sampled = info["episode_metadata"]["sampled_initial_state"]
-    assert sampled["mode"] == "sample_replay"
-    assert sampled["shot"] in {"3854", "3855", "3856", "3857", "3858", "3859", "3862", "3863", "3864"}
+    pfc = np.asarray(sampled["initial_pfc_currents"], dtype=float)
+    sol = np.asarray(sampled["initial_sol_currents"], dtype=float)
+    expected_currents = np.concatenate([pfc, sol])
+    assert sampled["mode"] == "sample_ranges"
+    assert sampled["shot"] == "synthetic"
     assert sampled["initial_ip"] > 100_000.0
     assert info["snapshot"].true_ip == pytest.approx(sampled["initial_ip"])
     assert info["snapshot"].reference.ip_ref == pytest.approx(sampled["initial_ip"])
+    assert np.allclose(info["snapshot"].true_active_currents, expected_currents)
     assert not np.allclose(info["snapshot"].true_active_currents, 0.0)
-    assert info["episode_metadata"]["training_contract"]["simulator"]["replay_initial_state_candidates"] == 9
+    override = info["episode_metadata"]["initial_state_override"]
+    assert override["coil_currents"] == "explicit"
+    assert np.allclose(override["pfc_currents"], pfc)
+    assert np.allclose(override["sol_currents"], sol)
+    assert info["episode_metadata"]["training_contract"]["simulator"]["range_initial_state_enabled"] is True
+    env.close()
+
+
+
+
+def test_tokamak_env_reset_can_hold_sampled_initial_boundary_static() -> None:
+    experiment = load_experiment_config(Path(__file__).resolve().parents[1] / "configs/experiments/t15md_training_keep_initial_boundary.yaml")
+    env = TokamakRLEnv(
+        replace(
+            experiment.env,
+            realism_enabled=False,
+            termination=replace(experiment.env.termination, boundary_loss_grace_steps=50),
+        ),
+        randomizer=DomainRandomizer(),
+    )
+
+    _obs, info = env.reset(seed=123)
+
+    sampled = info["episode_metadata"]["sampled_initial_state"]
+    scenario_args = info["episode_metadata"]["scenario_args"]
+    assert sampled["mode"] == "sample_ranges"
+    assert scenario_args["boundary_kind"] == "static_parameters"
+    assert "boundary_static_from_initial_state" not in scenario_args
+    assert scenario_args["boundary_parameters"] == pytest.approx(sampled["initial_boundary_parameters"])
+    assert info["snapshot"].reference.ip_ref == pytest.approx(sampled["initial_ip"])
+    assert info["episode_metadata"]["boundary_static_from_initial_state"] is True
     env.close()
 
 

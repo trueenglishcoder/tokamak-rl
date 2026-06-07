@@ -12,7 +12,7 @@ try:  # pragma: no cover - exercised when PyYAML is installed in the RL env.
 except ModuleNotFoundError:  # pragma: no cover - fallback is tested instead.
     yaml = None
 
-from tokamak_rl.env import EnvConfig, ReplayInitialStateCandidate, ReplayInitialStateConfig, TerminationConfig
+from tokamak_rl.env import EnvConfig, RangeInitialStateConfig, ReplayInitialStateCandidate, ReplayInitialStateConfig, TerminationConfig
 from tokamak_rl.randomization import DomainRandomizer
 from tokamak_rl.rewards import JointCurrentBoundaryReward
 from tokamak_rl.training.wandb_logging import WandBConfig
@@ -275,12 +275,14 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
     initial_coil_currents = "config"
     initial_ip_scale = None
     replay_initial_state = None
+    range_initial_state = None
     if "initial_state" in raw:
         initial_state = _load_initial_state_config(_require_mapping(raw, "initial_state"), base_dir=base_dir)
         initial_ip = initial_state["ip"]
         initial_coil_currents = initial_state["coil_currents"]
         initial_ip_scale = initial_state["ip_scale"]
         replay_initial_state = initial_state["replay_initial_state"]
+        range_initial_state = initial_state["range_initial_state"]
     scenario_args_raw = raw.get("scenario_args", {})
     if not isinstance(scenario_args_raw, dict):
         raise ValueError("sim.scenario_args must be a mapping")
@@ -315,6 +317,7 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
         initial_coil_currents=initial_coil_currents,
         initial_ip_scale=initial_ip_scale,
         replay_initial_state=replay_initial_state,
+        range_initial_state=range_initial_state,
         scenario_name=scenario_name,
         scenario_args=scenario_args,
         angles=angles,
@@ -329,24 +332,69 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
 
 
 def _load_initial_state_config(raw: Mapping[str, Any], *, base_dir: Path) -> dict[str, object]:
-    _reject_unknown(raw, {"ip", "coil_currents", "ip_scale", "replay"}, "sim.initial_state")
+    _reject_unknown(raw, {"ip", "coil_currents", "ip_scale", "replay", "ranges"}, "sim.initial_state")
     coil_currents = str(raw.get("coil_currents", "config"))
-    if coil_currents not in {"config", "zero", "sample_replay"}:
-        raise ValueError("sim.initial_state.coil_currents must be one of: config, zero, sample_replay")
+    if coil_currents not in {"config", "zero", "sample_replay", "sample_ranges"}:
+        raise ValueError("sim.initial_state.coil_currents must be one of: config, zero, sample_replay, sample_ranges")
     ip_raw = raw.get("ip")
-    if ip_raw is None or str(ip_raw) == "sample_replay":
+    if ip_raw is None or str(ip_raw) in {"sample_replay", "sample_ranges"}:
         ip = None
     else:
         ip = _finite_float(ip_raw, "sim.initial_state.ip")
     ip_scale = None if raw.get("ip_scale") is None else _positive_float(raw.get("ip_scale"), "sim.initial_state.ip_scale")
     replay_initial_state = None
+    range_initial_state = None
     if "replay" in raw:
         replay_initial_state = _load_replay_initial_state_config(_require_mapping(raw, "replay"), base_dir=base_dir)
+    if "ranges" in raw:
+        range_initial_state = _load_range_initial_state_config(_require_mapping(raw, "ranges"))
     if coil_currents == "sample_replay" and replay_initial_state is None:
         raise ValueError("sim.initial_state.replay is required when coil_currents is sample_replay")
     if str(ip_raw) == "sample_replay" and replay_initial_state is None:
         raise ValueError("sim.initial_state.replay is required when ip is sample_replay")
-    return {"ip": ip, "coil_currents": coil_currents, "ip_scale": ip_scale, "replay_initial_state": replay_initial_state}
+    if coil_currents == "sample_ranges" and range_initial_state is None:
+        raise ValueError("sim.initial_state.ranges is required when coil_currents is sample_ranges")
+    if str(ip_raw) == "sample_ranges" and range_initial_state is None:
+        raise ValueError("sim.initial_state.ranges is required when ip is sample_ranges")
+    return {
+        "ip": ip,
+        "coil_currents": coil_currents,
+        "ip_scale": ip_scale,
+        "replay_initial_state": replay_initial_state,
+        "range_initial_state": range_initial_state,
+    }
+
+
+def _load_range_initial_state_config(raw: Mapping[str, Any]) -> RangeInitialStateConfig:
+    _reject_unknown(raw, {"ip", "pfc_currents", "sol_currents", "boundary_parameters"}, "sim.initial_state.ranges")
+    return RangeInitialStateConfig(
+        ip=_interval_from_mapping(_require_mapping(raw, "ip"), "sim.initial_state.ranges.ip"),
+        pfc_currents=_load_current_bounds(raw, "pfc_currents", field="sim.initial_state.ranges.pfc_currents"),
+        sol_currents=_load_current_bounds(raw, "sol_currents", field="sim.initial_state.ranges.sol_currents"),
+        boundary_parameters={
+            name: _interval_from_mapping(_require_mapping(_require_mapping(raw, "boundary_parameters"), name), f"sim.initial_state.ranges.boundary_parameters.{name}")
+            for name in ("R0", "Z0", "A0", "kappa", "delta")
+        },
+    )
+
+
+def _load_current_bounds(raw: Mapping[str, Any], key: str, *, field: str) -> tuple[tuple[float, float], ...]:
+    value = raw.get(key)
+    if isinstance(value, list):
+        return tuple(_interval_from_mapping(item, f"{field}[{index}]") for index, item in enumerate(value))
+    if isinstance(value, Mapping):
+        def _sort_key(item: tuple[str, object]) -> tuple[int, str]:
+            digits = "".join(ch for ch in item[0] if ch.isdigit())
+            return (int(digits) if digits else 10**9, item[0])
+        return tuple(_interval_from_mapping(item_value, f"{field}.{item_key}") for item_key, item_value in sorted(value.items(), key=_sort_key))
+    raise ValueError(f"{field} must be a list or mapping")
+
+
+def _interval_from_mapping(raw: object, field: str) -> tuple[float, float]:
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{field} must be a mapping")
+    _reject_unknown(raw, {"min", "max"}, field)
+    return (_finite_float(raw.get("min"), f"{field}.min"), _finite_float(raw.get("max"), f"{field}.max"))
 
 
 def _load_replay_initial_state_config(raw: Mapping[str, Any], *, base_dir: Path) -> ReplayInitialStateConfig:
@@ -562,7 +610,12 @@ def _load_reference_boundary_source(raw: Mapping[str, Any]) -> dict[str, object]
         args["boundary_kind"] = "static_parameters"
         args["boundary_parameters"] = _load_boundary_parameters(_require_mapping(raw, "parameters"), field="sim.reference_source.boundary.parameters")
         return args
-    raise ValueError("sim.reference_source.boundary.kind must be one of: generated_parameters, static_parameters")
+    if kind == "static_initial_parameters":
+        _reject_unknown(raw, {"kind"}, "sim.reference_source.boundary")
+        args["boundary_kind"] = "static_parameters"
+        args["boundary_static_from_initial_state"] = True
+        return args
+    raise ValueError("sim.reference_source.boundary.kind must be one of: generated_parameters, static_parameters, static_initial_parameters")
 
 
 def _load_boundary_parameters(raw: Mapping[str, Any], *, field: str) -> dict[str, float]:

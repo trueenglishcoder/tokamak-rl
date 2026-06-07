@@ -77,6 +77,7 @@ def test_stage_m_training_preset_configs_load() -> None:
     real_like = load_experiment_config(REPO_ROOT / "configs/experiments/t15md_training_real_replay_like.yaml")
     circle = load_experiment_config(REPO_ROOT / "configs/experiments/t15md_training_circle_static_boundary.yaml")
     smoke = load_experiment_config(REPO_ROOT / "configs/experiments/t15md_training_real_replay_like_smoke.yaml")
+    keep_boundary = load_experiment_config(REPO_ROOT / "configs/experiments/t15md_training_keep_initial_boundary.yaml")
 
     assert real_like.env.scenario_name == "t15_synthetic_follow"
     assert real_like.env.scenario_args["reference_preset"] == "t15_real_replay_like"
@@ -84,21 +85,21 @@ def test_stage_m_training_preset_configs_load() -> None:
     assert real_like.env.scenario_args["boundary_bounds"]["R0"] == {"min": 1.3266, "max": 1.4756}
     assert real_like.env.observation_version == "v2"
     assert real_like.env.target_preview_steps == 8
-    assert real_like.env.initial_coil_currents == "sample_replay"
+    assert real_like.env.initial_coil_currents == "sample_ranges"
     assert real_like.env.initial_ip is None
-    assert real_like.env.replay_initial_state is not None
-    assert len(real_like.env.replay_initial_state.candidates) == 9
-    assert {candidate.shot for candidate in real_like.env.replay_initial_state.candidates} == {
-        "3854",
-        "3855",
-        "3856",
-        "3857",
-        "3858",
-        "3859",
-        "3862",
-        "3863",
-        "3864",
-    }
+    assert real_like.env.replay_initial_state is None
+    assert real_like.env.range_initial_state is not None
+    assert real_like.env.range_initial_state.ip == pytest.approx((124750.45168962443, 124967.92554755499))
+    assert len(real_like.env.range_initial_state.pfc_currents) == 6
+    assert len(real_like.env.range_initial_state.sol_currents) == 3
+    assert real_like.env.range_initial_state.boundary_parameters["kappa"][0] == pytest.approx(1.1120020187817363)
+    assert real_like.env.scenario_args["boundary_bounds"]["kappa"] == {"min": 1.1108, "max": 1.4966}
+    assert real_like.env.scenario_args["boundary_bounds"]["delta"] == {"min": 0.0992, "max": 0.3656}
+    assert keep_boundary.env.scenario_name == "t15_synthetic_follow"
+    assert keep_boundary.env.initial_coil_currents == "sample_ranges"
+    assert keep_boundary.env.scenario_args["boundary_kind"] == "static_parameters"
+    assert keep_boundary.env.scenario_args["boundary_static_from_initial_state"] is True
+    assert "boundary_parameters" not in keep_boundary.env.scenario_args
     assert circle.env.scenario_name == "t15_synthetic_follow"
     assert circle.env.scenario_args["reference_preset"] == "circle_static_boundary"
     assert circle.env.scenario_args["boundary_parameters"]["kappa"] == pytest.approx(1.0)
