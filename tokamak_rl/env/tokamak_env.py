@@ -43,12 +43,13 @@ class TokamakRLEnv:
         from tokamak_control.bridge import InitialStateOverride, SimulationSession
 
         _ = options
-        scenario_args, reference_metadata = self._scenario_args_for_reset(seed)
+        initial_currents_path, initial_ip, initial_metadata = self._initial_state_for_reset(seed)
+        scenario_args, reference_metadata = self._scenario_args_for_reset(seed, initial_metadata=initial_metadata)
         randomization_sample = self.randomizer.sample_episode(seed=seed)
         randomization_metadata = dict(randomization_sample.metadata)
         self.session = SimulationSession.from_paths(
             config_path=self.cfg.sim_config_path,
-            initial_currents_path=self.cfg.initial_currents_path,
+            initial_currents_path=initial_currents_path,
             scenario_name=self.cfg.scenario_name,
             scenario_args=scenario_args,
             angles=self.cfg.angles,
@@ -57,8 +58,8 @@ class TokamakRLEnv:
             realism_enabled=self.cfg.realism_enabled,
             realism_settings=randomization_sample.realism_settings,
             initial_state_override=InitialStateOverride(
-                ip=self.cfg.initial_ip,
-                coil_currents=self.cfg.initial_coil_currents,
+                ip=initial_ip,
+                coil_currents="config" if self.cfg.initial_coil_currents == "sample_replay" else self.cfg.initial_coil_currents,
                 ip_scale=self.cfg.initial_ip_scale,
             ),
         )
@@ -79,6 +80,7 @@ class TokamakRLEnv:
         episode_metadata = {
             **dict(reset.episode_metadata),
             **reference_metadata,
+            "sampled_initial_state": initial_metadata,
             "randomization": randomization_metadata,
         }
         episode_metadata["training_contract"] = self._training_contract_metadata(
@@ -92,7 +94,7 @@ class TokamakRLEnv:
             "machine": reset.machine,
             "episode_metadata": episode_metadata,
             "config_path": self.cfg.sim_config_path,
-            "initial_currents_path": self.cfg.initial_currents_path,
+            "initial_currents_path": initial_currents_path,
         }
         return obs, info
 
@@ -154,8 +156,17 @@ class TokamakRLEnv:
         }
         return obs, float(reward), terminated, bool(result.truncated), info
 
-    def _scenario_args_for_reset(self, seed: int | None) -> tuple[dict[str, object], dict[str, object]]:
+    def _scenario_args_for_reset(self, seed: int | None, *, initial_metadata: dict[str, object] | None = None) -> tuple[dict[str, object], dict[str, object]]:
         args = dict(self.cfg.scenario_args)
+        if initial_metadata is not None and initial_metadata.get("mode") == "sample_replay":
+            if self.cfg.scenario_name == "t15_synthetic_follow":
+                args["ip_start"] = float(initial_metadata["initial_ip"])
+                boundary_initial = initial_metadata.get("initial_boundary_parameters")
+                if isinstance(boundary_initial, dict) and str(args.get("boundary_kind", "generated_parameters")) == "generated_parameters":
+                    args["boundary_initial_parameters"] = _clip_boundary_parameters_to_bounds(
+                        dict(boundary_initial),
+                        args.get("boundary_bounds"),
+                    )
         if self.cfg.scenario_name != "t15_synthetic_follow" or not self.cfg.resample_references_on_reset:
             return args, {"reference_resampling_enabled": False}
 
@@ -174,6 +185,29 @@ class TokamakRLEnv:
             "reference_effective_seed": shape_seed,
             "reference_effective_ip_seed": ip_seed,
         }
+
+    def _initial_state_for_reset(self, seed: int | None):
+        if self.cfg.initial_coil_currents != "sample_replay":
+            return self.cfg.initial_currents_path, self.cfg.initial_ip, {
+                "mode": str(self.cfg.initial_coil_currents),
+                "shot": None,
+                "initial_currents_path": None if self.cfg.initial_currents_path is None else str(self.cfg.initial_currents_path),
+                "initial_ip": None if self.cfg.initial_ip is None else float(self.cfg.initial_ip),
+            }
+        if self.cfg.replay_initial_state is None:
+            raise RuntimeError("sample_replay initial state requires replay_initial_state config")
+        candidates = self.cfg.replay_initial_state.candidates
+        episode_seed = int(self._reset_count if seed is None else seed)
+        rng = np.random.default_rng(episode_seed + 9_104_729)
+        candidate = candidates[int(rng.integers(0, len(candidates)))]
+        metadata = {
+            "mode": "sample_replay",
+            "shot": str(candidate.shot),
+            "initial_currents_path": str(candidate.initial_currents_path),
+            "initial_ip": float(candidate.initial_ip),
+            "initial_boundary_parameters": dict(candidate.initial_boundary_parameters),
+        }
+        return candidate.initial_currents_path, float(candidate.initial_ip), metadata
 
     def close(self) -> None:
         if self.session is not None:
@@ -194,6 +228,7 @@ class TokamakRLEnv:
             "simulator": {
                 "config_path": str(self.cfg.sim_config_path),
                 "initial_currents_path": None if self.cfg.initial_currents_path is None else str(self.cfg.initial_currents_path),
+                "replay_initial_state_candidates": 0 if self.cfg.replay_initial_state is None else len(self.cfg.replay_initial_state.candidates),
                 "boundary_mode": str(machine.boundary_mode),
                 "limiter_name": machine.limiter_name,
                 "t_step": float(machine.t_step),
@@ -314,6 +349,19 @@ def _mix_seed(base_seed: int, episode_seed: int, *, salt: int) -> int:
     value ^= (int(episode_seed) + int(salt)) & 0xFFFFFFFF
     value = (value * 1664525 + 1013904223) & 0xFFFFFFFF
     return int(value)
+
+
+def _clip_boundary_parameters_to_bounds(parameters: dict[str, object], bounds: object) -> dict[str, float]:
+    out = {str(key): float(value) for key, value in parameters.items()}
+    if not isinstance(bounds, dict):
+        return out
+    for key in ("R0", "Z0", "A0", "kappa", "delta"):
+        raw_bound = bounds.get(key)
+        if not isinstance(raw_bound, dict) or key not in out:
+            continue
+        if "min" in raw_bound and "max" in raw_bound:
+            out[key] = float(np.clip(out[key], float(raw_bound["min"]), float(raw_bound["max"])))
+    return out
 
 
 def _reference_contract_metadata(

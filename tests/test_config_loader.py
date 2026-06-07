@@ -84,6 +84,21 @@ def test_stage_m_training_preset_configs_load() -> None:
     assert real_like.env.scenario_args["boundary_bounds"]["R0"] == {"min": 1.3266, "max": 1.4756}
     assert real_like.env.observation_version == "v2"
     assert real_like.env.target_preview_steps == 8
+    assert real_like.env.initial_coil_currents == "sample_replay"
+    assert real_like.env.initial_ip is None
+    assert real_like.env.replay_initial_state is not None
+    assert len(real_like.env.replay_initial_state.candidates) == 9
+    assert {candidate.shot for candidate in real_like.env.replay_initial_state.candidates} == {
+        "3854",
+        "3855",
+        "3856",
+        "3857",
+        "3858",
+        "3859",
+        "3862",
+        "3863",
+        "3864",
+    }
     assert circle.env.scenario_name == "t15_synthetic_follow"
     assert circle.env.scenario_args["reference_preset"] == "circle_static_boundary"
     assert circle.env.scenario_args["boundary_parameters"]["kappa"] == pytest.approx(1.0)

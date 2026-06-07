@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
+import glob
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 try:  # pragma: no cover - exercised when PyYAML is installed in the RL env.
@@ -9,7 +12,7 @@ try:  # pragma: no cover - exercised when PyYAML is installed in the RL env.
 except ModuleNotFoundError:  # pragma: no cover - fallback is tested instead.
     yaml = None
 
-from tokamak_rl.env import EnvConfig, TerminationConfig
+from tokamak_rl.env import EnvConfig, ReplayInitialStateCandidate, ReplayInitialStateConfig, TerminationConfig
 from tokamak_rl.randomization import DomainRandomizer
 from tokamak_rl.rewards import JointCurrentBoundaryReward
 from tokamak_rl.training.wandb_logging import WandBConfig
@@ -271,11 +274,13 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
     initial_ip = None
     initial_coil_currents = "config"
     initial_ip_scale = None
+    replay_initial_state = None
     if "initial_state" in raw:
-        initial_state = _load_initial_state_config(_require_mapping(raw, "initial_state"))
+        initial_state = _load_initial_state_config(_require_mapping(raw, "initial_state"), base_dir=base_dir)
         initial_ip = initial_state["ip"]
         initial_coil_currents = initial_state["coil_currents"]
         initial_ip_scale = initial_state["ip_scale"]
+        replay_initial_state = initial_state["replay_initial_state"]
     scenario_args_raw = raw.get("scenario_args", {})
     if not isinstance(scenario_args_raw, dict):
         raise ValueError("sim.scenario_args must be a mapping")
@@ -309,6 +314,7 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
         initial_ip=initial_ip,
         initial_coil_currents=initial_coil_currents,
         initial_ip_scale=initial_ip_scale,
+        replay_initial_state=replay_initial_state,
         scenario_name=scenario_name,
         scenario_args=scenario_args,
         angles=angles,
@@ -322,14 +328,100 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
     )
 
 
-def _load_initial_state_config(raw: Mapping[str, Any]) -> dict[str, object]:
-    _reject_unknown(raw, {"ip", "coil_currents", "ip_scale"}, "sim.initial_state")
+def _load_initial_state_config(raw: Mapping[str, Any], *, base_dir: Path) -> dict[str, object]:
+    _reject_unknown(raw, {"ip", "coil_currents", "ip_scale", "replay"}, "sim.initial_state")
     coil_currents = str(raw.get("coil_currents", "config"))
-    if coil_currents not in {"config", "zero"}:
-        raise ValueError("sim.initial_state.coil_currents must be one of: config, zero")
-    ip = None if raw.get("ip") is None else _finite_float(raw.get("ip"), "sim.initial_state.ip")
+    if coil_currents not in {"config", "zero", "sample_replay"}:
+        raise ValueError("sim.initial_state.coil_currents must be one of: config, zero, sample_replay")
+    ip_raw = raw.get("ip")
+    if ip_raw is None or str(ip_raw) == "sample_replay":
+        ip = None
+    else:
+        ip = _finite_float(ip_raw, "sim.initial_state.ip")
     ip_scale = None if raw.get("ip_scale") is None else _positive_float(raw.get("ip_scale"), "sim.initial_state.ip_scale")
-    return {"ip": ip, "coil_currents": coil_currents, "ip_scale": ip_scale}
+    replay_initial_state = None
+    if "replay" in raw:
+        replay_initial_state = _load_replay_initial_state_config(_require_mapping(raw, "replay"), base_dir=base_dir)
+    if coil_currents == "sample_replay" and replay_initial_state is None:
+        raise ValueError("sim.initial_state.replay is required when coil_currents is sample_replay")
+    if str(ip_raw) == "sample_replay" and replay_initial_state is None:
+        raise ValueError("sim.initial_state.replay is required when ip is sample_replay")
+    return {"ip": ip, "coil_currents": coil_currents, "ip_scale": ip_scale, "replay_initial_state": replay_initial_state}
+
+
+def _load_replay_initial_state_config(raw: Mapping[str, Any], *, base_dir: Path) -> ReplayInitialStateConfig:
+    _reject_unknown(raw, {"initial_currents_glob", "boundary_parameters_glob"}, "sim.initial_state.replay")
+    currents_glob = _require_str(raw, "initial_currents_glob")
+    boundary_glob = _require_str(raw, "boundary_parameters_glob")
+    current_paths = _resolve_glob(currents_glob, base_dir=base_dir, field="sim.initial_state.replay.initial_currents_glob")
+    boundary_by_shot = _load_initial_boundary_rows(
+        _resolve_glob(boundary_glob, base_dir=base_dir, field="sim.initial_state.replay.boundary_parameters_glob")
+    )
+    candidates: list[ReplayInitialStateCandidate] = []
+    for path in current_paths:
+        shot = _extract_shot_id(path)
+        if shot is None:
+            continue
+        boundary = boundary_by_shot.get(shot)
+        if boundary is None:
+            continue
+        candidates.append(
+            ReplayInitialStateCandidate(
+                shot=shot,
+                initial_currents_path=path,
+                initial_ip=float(boundary["Ip"]),
+                initial_boundary_parameters={
+                    key: float(boundary[key])
+                    for key in ("R0", "Z0", "A0", "kappa", "delta")
+                    if key in boundary
+                },
+            )
+        )
+    if not candidates:
+        raise ValueError("sim.initial_state.replay produced no matched replay initial-state candidates")
+    candidates.sort(key=lambda item: item.shot)
+    return ReplayInitialStateConfig(candidates=tuple(candidates))
+
+
+def _resolve_glob(pattern: str, *, base_dir: Path, field: str) -> list[Path]:
+    raw = Path(pattern).expanduser()
+    candidate_patterns = [str(raw)] if raw.is_absolute() else [str(base_dir / raw), str(base_dir.parent.parent / raw)]
+    paths: list[Path] = []
+    resolved_pattern = candidate_patterns[0]
+    for candidate_pattern in candidate_patterns:
+        matched = sorted(Path(p).resolve() for p in glob.glob(candidate_pattern))
+        if matched:
+            paths = matched
+            resolved_pattern = candidate_pattern
+            break
+    if not paths:
+        raise FileNotFoundError(f"{field} matched no files: {resolved_pattern}")
+    return paths
+
+
+def _extract_shot_id(path: Path) -> str | None:
+    match = re.search(r"(\d{4,6})", path.stem)
+    return None if match is None else match.group(1)
+
+
+def _load_initial_boundary_rows(paths: list[Path]) -> dict[str, dict[str, float]]:
+    out: dict[str, dict[str, float]] = {}
+    for path in paths:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                if row.get("fit_status") != "ok":
+                    continue
+                shot = str(row.get("shot") or _extract_shot_id(path) or "")
+                if not shot:
+                    continue
+                out[shot] = {
+                    key: _finite_float(row[key], f"{path.name}.{key}")
+                    for key in ("Ip", "R0", "Z0", "A0", "kappa", "delta")
+                    if key in row and row[key] not in {None, ""}
+                }
+                break
+    return out
 
 
 def _load_termination_config(raw: Mapping[str, Any]) -> TerminationConfig:

@@ -90,7 +90,7 @@ observation
 termination
 ```
 
-`initial_state` can override simulator startup state for training. The standard training presets start from `Ip = 0`, zero active coil currents, and an explicit Ip normalization scale.
+`initial_state` can override simulator startup state for training. Debug presets may start from `Ip = 0` and zero active coil currents. Real-replay-like training presets use `ip: sample_replay` and `coil_currents: sample_replay` to sample initial `Ip` and active coil currents from the fitted T15MD replay-start pool, while keeping an explicit Ip normalization scale.
 
 `reference_source` is the training-facing trajectory-source block. The current supported source is `kind: t15_synthetic_follow`, which is translated to the simulator's `t15_synthetic_follow` scenario. It is mutually exclusive with manual `scenario_name`/`scenario_args`. When `resample_references_on_reset` is true, `TokamakRLEnv.reset(seed=...)` derives effective shape and Ip seeds from the configured base seeds and the episode reset seed.
 

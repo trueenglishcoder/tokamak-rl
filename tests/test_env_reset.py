@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from tokamak_rl.env import EnvConfig, TerminationConfig, TokamakRLEnv
+from tokamak_rl.config import load_experiment_config
 from tokamak_rl.randomization import DomainRandomizer
 from tokamak_rl.rewards import JointCurrentBoundaryReward
 from tokamak_control.realism import SensorRealismSettings
@@ -116,6 +117,30 @@ def test_tokamak_env_reset_can_start_from_zero_ip_and_zero_coils(tmp_path: Path)
     assert info["episode_metadata"]["initial_state_override"]["coil_currents"] == "zero"
     assert info["episode_metadata"]["training_contract"]["environment"]["initial_ip"] == 0.0
     assert info["episode_metadata"]["training_contract"]["environment"]["initial_ip_scale"] == pytest.approx(5.0e5)
+    env.close()
+
+
+def test_tokamak_env_reset_can_sample_replay_initial_state() -> None:
+    experiment = load_experiment_config(Path(__file__).resolve().parents[1] / "configs/experiments/t15md_training_real_replay_like.yaml")
+    env = TokamakRLEnv(
+        replace(
+            experiment.env,
+            realism_enabled=False,
+            termination=replace(experiment.env.termination, boundary_loss_grace_steps=50),
+        ),
+        randomizer=DomainRandomizer(),
+    )
+
+    _obs, info = env.reset(seed=123)
+
+    sampled = info["episode_metadata"]["sampled_initial_state"]
+    assert sampled["mode"] == "sample_replay"
+    assert sampled["shot"] in {"3854", "3855", "3856", "3857", "3858", "3859", "3862", "3863", "3864"}
+    assert sampled["initial_ip"] > 100_000.0
+    assert info["snapshot"].true_ip == pytest.approx(sampled["initial_ip"])
+    assert info["snapshot"].reference.ip_ref == pytest.approx(sampled["initial_ip"])
+    assert not np.allclose(info["snapshot"].true_active_currents, 0.0)
+    assert info["episode_metadata"]["training_contract"]["simulator"]["replay_initial_state_candidates"] == 9
     env.close()
 
 

@@ -28,6 +28,33 @@ class TerminationConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayInitialStateCandidate:
+    """One replay-derived initial state candidate for episode reset sampling."""
+
+    shot: str
+    initial_currents_path: Path
+    initial_ip: float
+    initial_boundary_parameters: dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not str(self.shot).strip():
+            raise ValueError("replay initial-state shot must be non-empty")
+        if not _is_finite(float(self.initial_ip)):
+            raise ValueError("replay initial-state initial_ip must be finite")
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayInitialStateConfig:
+    """Replay-derived initial state sampling pool."""
+
+    candidates: tuple[ReplayInitialStateCandidate, ...]
+
+    def __post_init__(self) -> None:
+        if not self.candidates:
+            raise ValueError("replay initial-state config requires at least one candidate")
+
+
+@dataclass(frozen=True, slots=True)
 class EnvConfig:
     """Configuration needed to construct a tokamak-sim backed RL environment."""
 
@@ -36,6 +63,7 @@ class EnvConfig:
     initial_ip: float | None = None
     initial_coil_currents: str = "config"
     initial_ip_scale: float | None = None
+    replay_initial_state: ReplayInitialStateConfig | None = None
     scenario_name: str = "nominal"
     scenario_args: dict[str, object] = field(default_factory=dict)
     angles: int = 32
@@ -61,8 +89,10 @@ class EnvConfig:
             raise ValueError("target_preview_steps must be > 0 for observation_version 'v2'")
         if self.initial_ip is not None and not _is_finite(float(self.initial_ip)):
             raise ValueError("initial_ip must be finite when provided")
-        if str(self.initial_coil_currents) not in {"config", "zero"}:
-            raise ValueError("initial_coil_currents must be 'config' or 'zero'")
+        if str(self.initial_coil_currents) not in {"config", "zero", "sample_replay"}:
+            raise ValueError("initial_coil_currents must be 'config', 'zero', or 'sample_replay'")
+        if str(self.initial_coil_currents) == "sample_replay" and self.replay_initial_state is None:
+            raise ValueError("sample_replay initial_coil_currents requires replay_initial_state")
         if self.initial_ip_scale is not None:
             scale = float(self.initial_ip_scale)
             if not _is_finite(scale) or scale <= 0.0:

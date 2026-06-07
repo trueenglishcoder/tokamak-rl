@@ -103,9 +103,15 @@ def reset_artifact_record(info: Mapping[str, Any], *, env_index: int, episode: i
     metadata = metadata if isinstance(metadata, Mapping) else {}
     randomization = metadata.get("randomization")
     randomization = randomization if isinstance(randomization, Mapping) else {}
+    sampled_initial = metadata.get("sampled_initial_state")
+    sampled_initial = sampled_initial if isinstance(sampled_initial, Mapping) else {}
     return {
         "env_index": int(env_index),
         "episode": int(episode),
+        "initial_state_mode": str(sampled_initial.get("mode", "")),
+        "initial_state_shot": str(sampled_initial.get("shot", "")),
+        "initial_ip": _optional_float_with_default(sampled_initial.get("initial_ip"), float("nan")),
+        "initial_currents_path": str(sampled_initial.get("initial_currents_path", "")),
         "reference_resampling_enabled": bool(metadata.get("reference_resampling_enabled", False)),
         "reference_episode_seed": _optional_int_with_default(metadata.get("reference_episode_seed"), -1),
         "reference_effective_seed": _optional_int_with_default(metadata.get("reference_effective_seed"), -1),
@@ -140,11 +146,23 @@ def episode_artifact_record(
         "mean_ip_error_norm": _mean_or_empty(ip_errors),
         "mean_shape_error_norm": _mean_or_empty(shape_errors),
         "boundary_failure_steps": int(boundary_failure_steps),
+        "initial_state_mode": reset_record.get("initial_state_mode", ""),
+        "initial_state_shot": reset_record.get("initial_state_shot", ""),
+        "initial_ip": reset_record.get("initial_ip", float("nan")),
         "reference_episode_seed": reset_record.get("reference_episode_seed", -1),
         "reference_effective_seed": reset_record.get("reference_effective_seed", -1),
         "reference_effective_ip_seed": reset_record.get("reference_effective_ip_seed", -1),
         "randomization_seed": reset_record.get("randomization_seed", -1),
-    }
+}
+
+
+def _optional_float_with_default(value: object, default: float) -> float:
+    try:
+        if value is None or value == "":
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def record_episode_step_artifacts(
