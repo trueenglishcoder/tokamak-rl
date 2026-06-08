@@ -197,15 +197,19 @@ def generate_candidates(
 
 
 def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandidate, candidate_dir: Path) -> dict[str, object]:
-    process_envs = bool(args.process_envs or experiment.training.process_envs)
+    requested_num_envs = int(args.num_envs if args.num_envs is not None else experiment.training.num_envs)
+    requested_process_envs = bool(args.process_envs or experiment.training.process_envs)
+    gpu_pool_active = bool(experiment.env.compute_backend == "gpu" and requested_num_envs > 1)
+    process_envs = bool(requested_process_envs and not gpu_pool_active)
     process_start_method = str(args.process_start_method or experiment.training.process_start_method)
     eval_randomization_mode = args.eval_randomization_mode or experiment.evaluation.randomization_mode
-    env_factory = _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method)
+    env_factory = _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method, num_envs=requested_num_envs)
     eval_env_factory = _make_eval_env_factory(
         experiment=experiment,
         process_envs=process_envs,
         process_start_method=process_start_method,
         randomization_mode=eval_randomization_mode,
+        num_envs=1,
     )
     run_metadata = _experiment_run_metadata(experiment=experiment, trainer_name=trainer_name)
     run_metadata["reward_search"] = {
@@ -213,6 +217,9 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
         "candidate_dir": str(candidate_dir),
         "eval_randomization_mode": eval_randomization_mode,
         "reward": asdict(candidate.reward),
+        "requested_process_envs": requested_process_envs,
+        "process_envs": process_envs,
+        "gpu_env_pool_active": gpu_pool_active,
     }
     wandb = _candidate_wandb_config(args=args, experiment_name=experiment.name, candidate=candidate)
     run_metadata["wandb"] = asdict(wandb)
@@ -224,7 +231,7 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
             batch_size=args.batch_size if args.batch_size is not None else experiment.training.batch_size,
             hidden_dim=args.hidden_dim if args.hidden_dim is not None else experiment.training.hidden_dim,
             seed=(args.seed if args.seed is not None else experiment.training.seed) + candidate.index,
-            num_envs=args.num_envs if args.num_envs is not None else experiment.training.num_envs,
+            num_envs=requested_num_envs,
             output_dir=candidate_dir,
             checkpoint_dir=checkpoint_dir,
             checkpoint_interval_steps=args.checkpoint_interval_steps if bool(args.save_checkpoints) else None,
@@ -252,7 +259,7 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
             mpo_action_samples=args.mpo_action_samples if args.mpo_action_samples is not None else experiment.training.mpo_action_samples,
             mpo_temperature_iterations=args.mpo_temperature_iterations if args.mpo_temperature_iterations is not None else experiment.training.mpo_temperature_iterations,
             seed=(args.seed if args.seed is not None else experiment.training.seed) + candidate.index,
-            num_envs=args.num_envs if args.num_envs is not None else experiment.training.num_envs,
+            num_envs=requested_num_envs,
             updates_per_episode=args.updates_per_episode if args.updates_per_episode is not None else experiment.training.updates_per_episode,
             updates_per_env_step=args.updates_per_env_step if args.updates_per_env_step is not None else experiment.training.updates_per_env_step,
             output_dir=candidate_dir,

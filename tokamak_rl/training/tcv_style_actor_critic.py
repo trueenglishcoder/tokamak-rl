@@ -1342,6 +1342,7 @@ def _write_tcv_artifacts(
         "best_actor_export_dir": None if best_actor_export_dir is None else str(best_actor_export_dir),
         "device": device_metadata,
         "throughput": throughput,
+        "simulator_profiling": _simulator_profiling_snapshot(),
         "config": _checkpoint_safe_config(cfg),
         "run_metadata": json_safe(cfg.run_metadata),
     }
@@ -1363,6 +1364,21 @@ def _write_tcv_artifacts(
         best_actor_export_dir=best_actor_export_dir,
     )
     return metrics_json, losses_csv
+
+
+def _simulator_profiling_snapshot() -> dict[str, object]:
+    try:
+        from tokamak_control.core.plasma_model import plasma_model_profiling_snapshot
+        from tokamak_control.core.gpu_plasma_model import gpu_plasma_model_profiling_snapshot
+        from tokamak_control.geometry.boundary import boundary_profiling_snapshot
+    except Exception:
+        return {"available": False}
+    return {
+        "available": True,
+        "plasma_model": plasma_model_profiling_snapshot(),
+        "gpu_plasma_model": gpu_plasma_model_profiling_snapshot(),
+        "boundary": boundary_profiling_snapshot(),
+    }
 
 
 def _throughput_metrics(

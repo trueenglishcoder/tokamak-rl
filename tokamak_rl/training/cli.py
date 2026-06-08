@@ -5,7 +5,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from tokamak_rl.config import load_experiment_config
-from tokamak_rl.env import ProcessTokamakEnv, TokamakRLEnv
+from tokamak_rl.env import BatchedGpuEnvFactory, ProcessTokamakEnv, TokamakRLEnv
 from tokamak_rl.randomization import DomainRandomizer
 from tokamak_rl.training.diagnostics import json_safe
 from tokamak_rl.training.simple_actor_critic import SimpleTrainerConfig, train_simple_actor_critic
@@ -77,7 +77,10 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     trainer_name = args.trainer or experiment.training.trainer
-    process_envs = bool(args.process_envs or experiment.training.process_envs)
+    requested_num_envs = int(args.num_envs if args.num_envs is not None else experiment.training.num_envs)
+    requested_process_envs = bool(args.process_envs or experiment.training.process_envs)
+    gpu_pool_active = bool(experiment.env.compute_backend == "gpu" and requested_num_envs > 1)
+    process_envs = bool(requested_process_envs and not gpu_pool_active)
     process_start_method = str(args.process_start_method or experiment.training.process_start_method)
     output_dir = args.output_dir if args.output_dir is not None else experiment.artifacts.output_dir
     checkpoint_dir = args.checkpoint_dir if args.checkpoint_dir is not None else experiment.artifacts.checkpoint_dir
@@ -86,17 +89,20 @@ def main(argv: list[str] | None = None) -> int:
     export_best_actor = bool(experiment.artifacts.export_best_actor and not args.no_export_best_actor)
     run_metadata = _experiment_run_metadata(experiment=experiment, trainer_name=trainer_name)
     run_metadata["process_envs"] = process_envs
+    run_metadata["requested_process_envs"] = requested_process_envs
+    run_metadata["gpu_env_pool_active"] = gpu_pool_active
     run_metadata["process_start_method"] = process_start_method if process_envs else None
     eval_randomization_mode = args.eval_randomization_mode or experiment.evaluation.randomization_mode
     run_metadata["evaluation_randomization_mode"] = eval_randomization_mode
     wandb = _resolve_wandb_config(args=args, base=experiment.wandb, experiment_name=experiment.name)
     run_metadata["wandb"] = asdict(wandb)
-    env_factory = _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method)
+    env_factory = _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method, num_envs=requested_num_envs)
     eval_env_factory = _make_eval_env_factory(
         experiment=experiment,
         process_envs=process_envs,
         process_start_method=process_start_method,
         randomization_mode=eval_randomization_mode,
+        num_envs=1,
     )
     if trainer_name == "simple":
         cfg = SimpleTrainerConfig(
@@ -105,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=args.batch_size if args.batch_size is not None else experiment.training.batch_size,
             hidden_dim=args.hidden_dim if args.hidden_dim is not None else experiment.training.hidden_dim,
             seed=args.seed if args.seed is not None else experiment.training.seed,
-            num_envs=args.num_envs if args.num_envs is not None else experiment.training.num_envs,
+            num_envs=requested_num_envs,
             eval_interval_steps=args.eval_interval_steps,
             output_dir=output_dir,
             checkpoint_dir=checkpoint_dir,
@@ -143,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
             mpo_initial_mean_kl_penalty=args.mpo_initial_mean_kl_penalty if args.mpo_initial_mean_kl_penalty is not None else experiment.training.mpo_initial_mean_kl_penalty,
             mpo_initial_std_kl_penalty=args.mpo_initial_std_kl_penalty if args.mpo_initial_std_kl_penalty is not None else experiment.training.mpo_initial_std_kl_penalty,
             seed=args.seed if args.seed is not None else experiment.training.seed,
-            num_envs=args.num_envs if args.num_envs is not None else experiment.training.num_envs,
+            num_envs=requested_num_envs,
             updates_per_episode=args.updates_per_episode if args.updates_per_episode is not None else experiment.training.updates_per_episode,
             updates_per_env_step=args.updates_per_env_step if args.updates_per_env_step is not None else experiment.training.updates_per_env_step,
             max_learner_catchup_updates=args.max_learner_catchup_updates if args.max_learner_catchup_updates is not None else experiment.training.max_learner_catchup_updates,
@@ -220,7 +226,7 @@ def _resolve_wandb_config(*, args, base: WandBConfig, experiment_name: str) -> W
     )
 
 
-def _make_env_factory(*, experiment, process_envs: bool, process_start_method: str):
+def _make_env_factory(*, experiment, process_envs: bool, process_start_method: str, num_envs: int = 1):
     if bool(process_envs):
         return lambda: ProcessTokamakEnv(
             experiment.env,
@@ -228,12 +234,19 @@ def _make_env_factory(*, experiment, process_envs: bool, process_start_method: s
             randomizer=experiment.randomization,
             start_method=process_start_method,
         )
+    if experiment.env.compute_backend == "gpu" and int(num_envs) > 1:
+        return BatchedGpuEnvFactory(
+            experiment.env,
+            num_envs=int(num_envs),
+            reward_fn=experiment.reward,
+            randomizer=experiment.randomization,
+        )
     return lambda: TokamakRLEnv(experiment.env, reward_fn=experiment.reward, randomizer=experiment.randomization)
 
 
-def _make_eval_env_factory(*, experiment, process_envs: bool, process_start_method: str, randomization_mode: str):
+def _make_eval_env_factory(*, experiment, process_envs: bool, process_start_method: str, randomization_mode: str, num_envs: int = 1):
     if randomization_mode == "configured":
-        return _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method)
+        return _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method, num_envs=num_envs)
     if randomization_mode != "clean":
         raise ValueError("evaluation randomization mode must be one of: configured, clean")
     clean_env = replace(experiment.env, realism_enabled=False)

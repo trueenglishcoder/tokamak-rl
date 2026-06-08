@@ -38,6 +38,18 @@ class TokamakRLEnv:
         self._terminated = False
         self._termination_reason: str | None = None
         self._measured_boundary_missing_count = 0
+        self._configure_simulator_profiling()
+
+    def _configure_simulator_profiling(self) -> None:
+        try:
+            from tokamak_control.core.plasma_model import configure_plasma_model_profiling
+            from tokamak_control.core.gpu_plasma_model import configure_gpu_plasma_model_profiling
+            from tokamak_control.geometry.boundary import configure_boundary_profiling
+        except Exception:
+            return
+        configure_plasma_model_profiling(enabled=True, summary_every=0, reset=False)
+        configure_gpu_plasma_model_profiling(enabled=True, summary_every=0, reset=False)
+        configure_boundary_profiling(enabled=True, summary_every=0, reset=False)
 
     def reset(self, seed: int | None = None, options: dict | None = None):
         from tokamak_control.bridge import InitialStateOverride, SimulationSession
