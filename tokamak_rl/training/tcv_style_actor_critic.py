@@ -162,6 +162,8 @@ class TCVStyleTrainingResult:
 
 
 def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerConfig, *, eval_env_factory: EnvFactory | None = None) -> TCVStyleTrainingResult:
+    if bool(getattr(env_factory, "is_true_batched_gpu_factory", False)):
+        return _train_tcv_style_actor_critic_true_batched_gpu(env_factory, cfg, eval_env_factory=eval_env_factory)
     eval_factory = env_factory if eval_env_factory is None else eval_env_factory
     rng = np.random.default_rng(int(cfg.seed))
     torch.manual_seed(int(cfg.seed))
@@ -820,6 +822,215 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
     )
 
 
+def _train_tcv_style_actor_critic_true_batched_gpu(env_factory: EnvFactory, cfg: TCVStyleTrainerConfig, *, eval_env_factory: EnvFactory | None = None) -> TCVStyleTrainingResult:
+    eval_factory = env_factory if eval_env_factory is None else eval_env_factory
+    try:
+        from tokamak_control.core.batched_gpu_simulator import configure_batched_gpu_simulator_profiling
+
+        configure_batched_gpu_simulator_profiling(enabled=True, summary_every=0, reset=True)
+    except Exception:
+        pass
+    rng = np.random.default_rng(int(cfg.seed))
+    torch.manual_seed(int(cfg.seed))
+    torch_generator = torch.Generator(device="cpu").manual_seed(int(cfg.seed))
+    device, device_selection = resolve_training_device(cfg.device)
+    started_at = time.perf_counter()
+    collection_time_s = 0.0
+    actor_inference_time_s = 0.0
+    env_step_time_s = 0.0
+    timing = {"replay_sampling_time_s": 0.0}
+    learner_time_s = 0.0
+    evaluation_time_s = 0.0
+
+    env = env_factory()
+    if not hasattr(env, "reset_batch") or not hasattr(env, "step_batch"):
+        raise RuntimeError("true batched GPU factory did not return a batch environment")
+    seeds = np.arange(int(cfg.seed), int(cfg.seed) + int(cfg.num_envs), dtype=int)
+    reset = env.reset_batch(seeds)
+    observations = np.asarray(reset.observations, dtype=np.float32)
+    obs_dim = int(env.obs_dim)
+    action_dim = int(env.action_dim)
+    if observations.shape != (int(cfg.num_envs), obs_dim):
+        raise ValueError("batched reset returned observations with unexpected shape")
+
+    diagnostics = TrainingDiagnostics()
+    training_contract: dict[str, object] | None = None
+    reset_metadata: list[dict[str, object]] = []
+    reference_records: list[dict[str, object]] = []
+    for env_index, reset_info in enumerate(reset.infos):
+        diagnostics.record_reset_info(reset_info)
+        if training_contract is None:
+            training_contract = _extract_training_contract(reset_info)
+        reset_record = reset_artifact_record(reset_info, env_index=env_index, episode=0)
+        reset_metadata.append(reset_record)
+        reference_records.append(dict(reset_record))
+
+    actor = FeedForwardActor(ActorConfig(obs_dim=obs_dim, action_dim=action_dim, hidden_dim=int(cfg.actor_hidden_dim))).to(device)
+    actor_target = FeedForwardActor(ActorConfig(obs_dim=obs_dim, action_dim=action_dim, hidden_dim=int(cfg.actor_hidden_dim))).to(device)
+    critic_cfg = RecurrentCriticConfig(obs_dim=obs_dim, action_dim=action_dim, hidden_dim=int(cfg.critic_hidden_dim), mlp_hidden_dim=int(cfg.critic_mlp_hidden_dim))
+    q1 = RecurrentQCritic(critic_cfg).to(device)
+    q2 = RecurrentQCritic(critic_cfg).to(device)
+    q1_target = RecurrentQCritic(critic_cfg).to(device)
+    q2_target = RecurrentQCritic(critic_cfg).to(device)
+    actor_opt = torch.optim.Adam(actor.parameters(), lr=float(cfg.actor_lr))
+    critic_opt = torch.optim.Adam(list(q1.parameters()) + list(q2.parameters()), lr=float(cfg.critic_lr))
+    log_mpo_mean_kl_penalty = torch.tensor(_inverse_softplus(float(cfg.mpo_initial_mean_kl_penalty)), dtype=torch.float32, device=device, requires_grad=True)
+    log_mpo_std_kl_penalty = torch.tensor(_inverse_softplus(float(cfg.mpo_initial_std_kl_penalty)), dtype=torch.float32, device=device, requires_grad=True)
+    mpo_kl_opt = torch.optim.Adam([log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty], lr=float(cfg.mpo_kl_lr))
+    if cfg.resume_checkpoint is not None:
+        _load_tcv_training_state(
+            cfg.resume_checkpoint,
+            actor=actor,
+            actor_target=actor_target,
+            q1=q1,
+            q2=q2,
+            q1_target=q1_target,
+            q2_target=q2_target,
+            actor_opt=actor_opt,
+            critic_opt=critic_opt,
+            log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty,
+            log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
+            mpo_kl_opt=mpo_kl_opt,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=device,
+            torch_generator=torch_generator,
+        )
+    else:
+        actor_target.load_state_dict(actor.state_dict())
+        q1_target.load_state_dict(q1.state_dict())
+        q2_target.load_state_dict(q2.state_dict())
+
+    replay = EpisodeReplayBuffer(capacity_episodes=int(cfg.replay_capacity_episodes), obs_dim=obs_dim, action_dim=action_dim)
+    episode_builders = [_EpisodeBuilder() for _ in range(int(cfg.num_envs))]
+    running_returns = [0.0 for _ in range(int(cfg.num_envs))]
+    running_lengths = [0 for _ in range(int(cfg.num_envs))]
+    running_ip_errors: list[list[float]] = [[] for _ in range(int(cfg.num_envs))]
+    running_shape_errors: list[list[float]] = [[] for _ in range(int(cfg.num_envs))]
+    running_boundary_failure_steps = [0 for _ in range(int(cfg.num_envs))]
+    episode_returns: list[float] = []
+    episode_lengths: list[int] = []
+    episode_indices = [0 for _ in range(int(cfg.num_envs))]
+    episode_records: list[dict[str, object]] = []
+    critic_losses: list[float] = []
+    actor_losses: list[float] = []
+    mpo_temperature_losses: list[float] = []
+    mpo_temperatures: list[float] = []
+    mpo_mean_kls: list[float] = []
+    mpo_std_kls: list[float] = []
+    mpo_kl_dual_losses: list[float] = []
+    mpo_mean_kl_penalties: list[float] = []
+    mpo_std_kl_penalties: list[float] = []
+    valid_steps_per_update: list[int] = []
+    loss_rows: list[dict[str, object]] = []
+    eval_history: list[dict[str, object]] = []
+    step_count = 0
+    update_index = 0
+    best_eval_score = float("-inf")
+    best_checkpoint_path: Path | None = None
+    latest_checkpoint_path: Path | None = None
+    reward_writer = RewardComponentWriter(cfg.output_dir)
+    progress = TrainingProgressBar(total_steps=int(cfg.total_steps), label="tcv_style_batched_gpu", enabled=bool(cfg.progress))
+    wandb_logger = WandBLogger(cfg.wandb, config=_checkpoint_safe_config(cfg), run_metadata={**json_safe(cfg.run_metadata), "device": device_selection.to_metadata(), "trainer": "tcv_style_recurrent_actor_critic_v1", "env_backend": "true_batched_gpu"})
+    progress.update(0, status=_tcv_progress_status(replay_episodes=0, replay_transitions=0, update_count=0), force=True)
+
+    try:
+        while step_count < int(cfg.total_steps):
+            active_count = min(int(cfg.num_envs), int(cfg.total_steps) - step_count)
+            warmup = np.asarray([step_count + i < int(cfg.warmup_steps) for i in range(int(cfg.num_envs))], dtype=bool)
+            collect_t0 = time.perf_counter()
+            actions = _select_training_actions_batch(actor, observations, action_dim=action_dim, warmup=warmup, rng=rng, torch_generator=torch_generator, device=device)
+            action_elapsed = time.perf_counter() - collect_t0
+            actor_inference_time_s += action_elapsed
+            collection_time_s += action_elapsed
+            collect_t0 = time.perf_counter()
+            step = env.step_batch(actions)
+            step_elapsed = time.perf_counter() - collect_t0
+            env_step_time_s += step_elapsed
+            collection_time_s += step_elapsed
+            next_observations = np.asarray(step.observations, dtype=np.float32)
+            done_indices: list[int] = []
+            reset_seeds: list[int] = []
+            for env_index in range(active_count):
+                reward = float(step.rewards[env_index])
+                terminated = bool(step.terminated[env_index])
+                truncated = bool(step.truncated[env_index])
+                info = step.infos[env_index]
+                diagnostics.record_step_info(info)
+                reward_components = info.get("reward_components") if isinstance(info, dict) else None
+                reward_writer.record(step=step_count + env_index + 1, env_index=env_index, episode=episode_indices[env_index], components=reward_components)
+                wandb_logger.log({"train": {"reward": reward, "env_index": int(env_index), "episode": int(episode_indices[env_index]), "terminated": terminated, "truncated": truncated}, "reward_components": reward_components if isinstance(reward_components, dict) else {}}, step=step_count + env_index + 1)
+                episode_builders[env_index].add(observations[env_index], actions[env_index], reward, next_observations[env_index], terminated, truncated)
+                running_returns[env_index] += reward
+                running_lengths[env_index] += 1
+                record_episode_step_artifacts(info, ip_errors=running_ip_errors[env_index], shape_errors=running_shape_errors[env_index], boundary_failure_counter=running_boundary_failure_steps, env_index=env_index)
+                if terminated or truncated:
+                    replay.add_episode(**episode_builders[env_index].to_episode_arrays())
+                    episode_builders[env_index].clear()
+                    episode_returns.append(float(running_returns[env_index]))
+                    episode_lengths.append(int(running_lengths[env_index]))
+                    episode_record = episode_artifact_record(env_index=env_index, episode=episode_indices[env_index], episode_return=running_returns[env_index], episode_length=running_lengths[env_index], terminated=terminated, truncated=truncated, termination_reason=termination_reason_from_step_info(info, terminated=terminated, truncated=truncated), ip_errors=running_ip_errors[env_index], shape_errors=running_shape_errors[env_index], boundary_failure_steps=running_boundary_failure_steps[env_index], reset_record=reset_metadata[env_index])
+                    episode_records.append(episode_record)
+                    wandb_logger.log_episode({**episode_record, "return": float(running_returns[env_index]), "length": int(running_lengths[env_index])}, step=step_count + env_index + 1)
+                    episode_indices[env_index] += 1
+                    running_returns[env_index] = 0.0
+                    running_lengths[env_index] = 0
+                    running_ip_errors[env_index].clear()
+                    running_shape_errors[env_index].clear()
+                    running_boundary_failure_steps[env_index] = 0
+                    done_indices.append(env_index)
+                    reset_seeds.append(int(cfg.seed) + 20_000 + step_count + env_index)
+            observations = next_observations
+            step_count += active_count
+            if done_indices:
+                update_t0 = time.perf_counter()
+                update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(int(cfg.updates_per_episode) * len(done_indices), cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
+                learner_time_s += time.perf_counter() - update_t0
+                reset_obs, reset_infos = env.reset_indices(done_indices, reset_seeds)
+                for local, env_index in enumerate(done_indices):
+                    reset_info = reset_infos[local]
+                    diagnostics.record_reset_info(reset_info)
+                    if training_contract is None:
+                        training_contract = _extract_training_contract(reset_info)
+                    reset_metadata[env_index] = reset_artifact_record(reset_info, env_index=env_index, episode=episode_indices[env_index])
+                    reference_records.append(dict(reset_metadata[env_index]))
+                    observations[env_index] = reset_obs[local]
+            if int(cfg.updates_per_env_step) > 0 and replay.size > 0:
+                update_t0 = time.perf_counter()
+                update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(int(cfg.updates_per_env_step) * active_count, cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
+                learner_time_s += time.perf_counter() - update_t0
+            progress.update(step_count, status=_tcv_progress_status(replay_episodes=replay.size, replay_transitions=replay.total_transitions, update_count=update_index, critic_loss=critic_losses[-1] if critic_losses else None, actor_loss=actor_losses[-1] if actor_losses else None, episodes=len(episode_returns)))
+    finally:
+        progress.close(status=_tcv_progress_status(replay_episodes=replay.size, replay_transitions=replay.total_transitions, update_count=update_index, critic_loss=critic_losses[-1] if critic_losses else None, actor_loss=actor_losses[-1] if actor_losses else None, episodes=len(episode_returns)))
+        reward_writer.close()
+        env.close()
+
+    for env_index, builder in enumerate(episode_builders):
+        if builder.length > 0:
+            replay.add_episode(**builder.to_episode_arrays())
+            episode_returns.append(float(running_returns[env_index]))
+            episode_lengths.append(int(running_lengths[env_index]))
+            episode_records.append(episode_artifact_record(env_index=env_index, episode=episode_indices[env_index], episode_return=running_returns[env_index], episode_length=running_lengths[env_index], terminated=False, truncated=True, termination_reason="training_horizon", ip_errors=running_ip_errors[env_index], shape_errors=running_shape_errors[env_index], boundary_failure_steps=running_boundary_failure_steps[env_index], reset_record=reset_metadata[env_index]))
+    if replay.size > 0:
+        update_t0 = time.perf_counter()
+        update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(int(cfg.updates_per_episode), cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
+        learner_time_s += time.perf_counter() - update_t0
+
+    eval_t0 = time.perf_counter()
+    final_eval = evaluate_tcv_actor_detailed(eval_factory, actor, episodes=int(cfg.eval_episodes), max_steps=int(cfg.eval_max_steps), seed=_eval_seed_base(cfg), device=device)
+    evaluation_time_s += time.perf_counter() - eval_t0
+    eval_returns = final_eval["returns"]
+    final_mean = float(np.mean(eval_returns)) if eval_returns else 0.0
+    checkpoint_path = _save_tcv_checkpoint(actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, cfg=cfg, obs_dim=obs_dim, action_dim=action_dim, total_steps=step_count, update_index=update_index, best_eval_score=final_mean, numpy_rng_state=rng.bit_generator.state, torch_generator_state=torch_generator.get_state(), training_contract=training_contract) if cfg.checkpoint_dir is not None else None
+    latest_checkpoint_path = checkpoint_path
+    best_checkpoint_path = checkpoint_path
+    best_actor_export_dir = export_best_actor_artifact(checkpoint_path=best_checkpoint_path, output_dir=cfg.output_dir, training_contract=training_contract, metadata={"trainer": "tcv_style_recurrent_actor_critic_v1", "algorithm": "tcv_mpo_recurrent_actor_critic_v1", "run_metadata": cfg.run_metadata}) if bool(cfg.export_best_actor) else None
+    metrics_json, losses_csv = _write_tcv_artifacts(cfg=cfg, total_steps=step_count, replay_episodes=replay.size, replay_transitions=replay.total_transitions, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, episode_returns=episode_returns, episode_lengths=episode_lengths, eval_returns=eval_returns, eval_history=eval_history, episode_records=episode_records, reference_records=reference_records, tracking_diagnostics=diagnostics.summary(), eval_tracking_diagnostics=final_eval["tracking_diagnostics"], checkpoint_path=checkpoint_path, latest_checkpoint_path=latest_checkpoint_path, best_checkpoint_path=best_checkpoint_path, best_actor_export_dir=best_actor_export_dir, throughput=_throughput_metrics(total_steps=step_count, update_count=update_index, total_elapsed_s=time.perf_counter() - started_at, collection_time_s=collection_time_s, actor_inference_time_s=actor_inference_time_s, env_step_time_s=env_step_time_s, replay_sampling_time_s=float(timing["replay_sampling_time_s"]), learner_time_s=learner_time_s, evaluation_time_s=evaluation_time_s), device_metadata=device_selection.to_metadata())
+    wandb_logger.log_final({"total_steps": int(step_count), "replay_episodes": int(replay.size), "replay_transitions": int(replay.total_transitions), "critic_updates": len(critic_losses), "actor_updates": len(actor_losses), "eval_mean_return": final_mean, "tracking_diagnostics": diagnostics.summary(), "eval_tracking_diagnostics": final_eval["tracking_diagnostics"]}, artifact_paths={"metrics": metrics_json, "losses": losses_csv, "checkpoint": checkpoint_path, "latest_checkpoint": latest_checkpoint_path, "best_checkpoint": best_checkpoint_path, "best_actor_export": best_actor_export_dir}, step=step_count)
+    wandb_logger.close()
+    return TCVStyleTrainingResult(total_steps=step_count, replay_episodes=replay.size, replay_transitions=replay.total_transitions, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, episode_returns=episode_returns, episode_lengths=episode_lengths, eval_returns=eval_returns, eval_history=eval_history, checkpoint_path=checkpoint_path, metrics_json=metrics_json, losses_csv=losses_csv, latest_checkpoint_path=latest_checkpoint_path, best_checkpoint_path=best_checkpoint_path, best_actor_export_dir=best_actor_export_dir)
+
+
 def evaluate_tcv_actor(env_factory: EnvFactory, actor: FeedForwardActor, *, episodes: int, max_steps: int, seed: int, device: torch.device | str = "cpu") -> list[float]:
     return list(evaluate_tcv_actor_detailed(env_factory, actor, episodes=episodes, max_steps=max_steps, seed=seed, device=device)["returns"])
 
@@ -829,6 +1040,8 @@ def evaluate_tcv_actor_detailed(env_factory: EnvFactory, actor: FeedForwardActor
         raise ValueError("episodes must be > 0")
     if int(max_steps) <= 0:
         raise ValueError("max_steps must be > 0")
+    if bool(getattr(env_factory, "is_true_batched_gpu_factory", False)):
+        return _evaluate_tcv_actor_detailed_true_batched_gpu(env_factory, actor, episodes=episodes, max_steps=max_steps, seed=seed, device=device)
     device = torch.device(device)
     was_training = actor.training
     actor.eval()
@@ -853,6 +1066,47 @@ def evaluate_tcv_actor_detailed(env_factory: EnvFactory, actor: FeedForwardActor
             finally:
                 env.close()
             returns.append(float(total))
+    finally:
+        actor.train(was_training)
+    return {"returns": returns, "tracking_diagnostics": diagnostics.summary()}
+
+
+def _evaluate_tcv_actor_detailed_true_batched_gpu(env_factory: EnvFactory, actor: FeedForwardActor, *, episodes: int, max_steps: int, seed: int, device: torch.device | str = "cpu") -> dict[str, object]:
+    device = torch.device(device)
+    env = env_factory()
+    batch = int(getattr(env, "num_envs", episodes))
+    remaining = int(episodes)
+    returns: list[float] = []
+    diagnostics = TrainingDiagnostics()
+    was_training = actor.training
+    actor.eval()
+    try:
+        while remaining > 0:
+            active = min(batch, remaining)
+            seeds = np.arange(int(seed) + len(returns), int(seed) + len(returns) + batch, dtype=int)
+            reset = env.reset_batch(seeds)
+            obs = np.asarray(reset.observations, dtype=np.float32)
+            for info in reset.infos[:active]:
+                diagnostics.record_reset_info(info)
+            totals = np.zeros((batch,), dtype=float)
+            done = np.zeros((batch,), dtype=bool)
+            for _ in range(int(max_steps)):
+                obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                with torch.no_grad():
+                    action = actor.deterministic_action(obs_t).detach().cpu().numpy()
+                step = env.step_batch(action)
+                obs = np.asarray(step.observations, dtype=np.float32)
+                for i in range(active):
+                    if done[i]:
+                        continue
+                    diagnostics.record_step_info(step.infos[i])
+                    totals[i] += float(step.rewards[i])
+                    if bool(step.terminated[i]) or bool(step.truncated[i]):
+                        done[i] = True
+                if bool(np.all(done[:active])):
+                    break
+            returns.extend(float(v) for v in totals[:active])
+            remaining -= active
     finally:
         actor.train(was_training)
     return {"returns": returns, "tracking_diagnostics": diagnostics.summary()}
@@ -1370,6 +1624,7 @@ def _simulator_profiling_snapshot() -> dict[str, object]:
     try:
         from tokamak_control.core.plasma_model import plasma_model_profiling_snapshot
         from tokamak_control.core.gpu_plasma_model import gpu_plasma_model_profiling_snapshot
+        from tokamak_control.core.batched_gpu_simulator import batched_gpu_simulator_profiling_snapshot
         from tokamak_control.geometry.boundary import boundary_profiling_snapshot
     except Exception:
         return {"available": False}
@@ -1377,6 +1632,7 @@ def _simulator_profiling_snapshot() -> dict[str, object]:
         "available": True,
         "plasma_model": plasma_model_profiling_snapshot(),
         "gpu_plasma_model": gpu_plasma_model_profiling_snapshot(),
+        "batched_gpu_simulator": batched_gpu_simulator_profiling_snapshot(),
         "boundary": boundary_profiling_snapshot(),
     }
 

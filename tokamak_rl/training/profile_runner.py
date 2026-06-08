@@ -160,11 +160,13 @@ def _optional_torch_profiler(profile_dir: Path, *, enabled: bool, record_shapes:
 def _reset_simulator_profilers() -> None:
     try:
         from tokamak_control.core.gpu_plasma_model import configure_gpu_plasma_model_profiling
+        from tokamak_control.core.batched_gpu_simulator import configure_batched_gpu_simulator_profiling
         from tokamak_control.core.plasma_model import configure_plasma_model_profiling
         from tokamak_control.geometry.boundary import configure_boundary_profiling
 
         configure_plasma_model_profiling(enabled=True, summary_every=0, reset=True)
         configure_gpu_plasma_model_profiling(enabled=True, summary_every=0, reset=True)
+        configure_batched_gpu_simulator_profiling(enabled=True, summary_every=0, reset=True)
         configure_boundary_profiling(enabled=True, summary_every=0, reset=True)
     except Exception:
         return
@@ -173,6 +175,7 @@ def _reset_simulator_profilers() -> None:
 def _simulator_profiling_snapshot() -> dict[str, object]:
     try:
         from tokamak_control.core.gpu_plasma_model import gpu_plasma_model_profiling_snapshot
+        from tokamak_control.core.batched_gpu_simulator import batched_gpu_simulator_profiling_snapshot
         from tokamak_control.core.plasma_model import plasma_model_profiling_snapshot
         from tokamak_control.geometry.boundary import boundary_profiling_snapshot
     except Exception as exc:
@@ -181,6 +184,7 @@ def _simulator_profiling_snapshot() -> dict[str, object]:
         "available": True,
         "plasma_model": plasma_model_profiling_snapshot(),
         "gpu_plasma_model": gpu_plasma_model_profiling_snapshot(),
+        "batched_gpu_simulator": batched_gpu_simulator_profiling_snapshot(),
         "boundary": boundary_profiling_snapshot(),
     }
 

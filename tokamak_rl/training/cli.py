@@ -5,7 +5,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from tokamak_rl.config import load_experiment_config
-from tokamak_rl.env import BatchedGpuEnvFactory, ProcessTokamakEnv, TokamakRLEnv
+from tokamak_rl.env import ProcessTokamakEnv, TokamakRLEnv, TrueBatchedGpuEnvFactory
 from tokamak_rl.randomization import DomainRandomizer
 from tokamak_rl.training.diagnostics import json_safe
 from tokamak_rl.training.simple_actor_critic import SimpleTrainerConfig, train_simple_actor_critic
@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     trainer_name = args.trainer or experiment.training.trainer
     requested_num_envs = int(args.num_envs if args.num_envs is not None else experiment.training.num_envs)
     requested_process_envs = bool(args.process_envs or experiment.training.process_envs)
-    gpu_pool_active = bool(experiment.env.compute_backend == "gpu" and requested_num_envs > 1)
+    gpu_pool_active = bool(experiment.env.compute_backend == "gpu")
     process_envs = bool(requested_process_envs and not gpu_pool_active)
     process_start_method = str(args.process_start_method or experiment.training.process_start_method)
     output_dir = args.output_dir if args.output_dir is not None else experiment.artifacts.output_dir
@@ -234,8 +234,8 @@ def _make_env_factory(*, experiment, process_envs: bool, process_start_method: s
             randomizer=experiment.randomization,
             start_method=process_start_method,
         )
-    if experiment.env.compute_backend == "gpu" and int(num_envs) > 1:
-        return BatchedGpuEnvFactory(
+    if experiment.env.compute_backend == "gpu":
+        return TrueBatchedGpuEnvFactory(
             experiment.env,
             num_envs=int(num_envs),
             reward_fn=experiment.reward,
@@ -257,6 +257,13 @@ def _make_eval_env_factory(*, experiment, process_envs: bool, process_start_meth
             reward_fn=experiment.reward,
             randomizer=clean_randomizer,
             start_method=process_start_method,
+        )
+    if clean_env.compute_backend == "gpu":
+        return TrueBatchedGpuEnvFactory(
+            clean_env,
+            num_envs=int(num_envs),
+            reward_fn=experiment.reward,
+            randomizer=clean_randomizer,
         )
     return lambda: TokamakRLEnv(clean_env, reward_fn=experiment.reward, randomizer=clean_randomizer)
 

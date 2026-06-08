@@ -199,7 +199,7 @@ def generate_candidates(
 def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandidate, candidate_dir: Path) -> dict[str, object]:
     requested_num_envs = int(args.num_envs if args.num_envs is not None else experiment.training.num_envs)
     requested_process_envs = bool(args.process_envs or experiment.training.process_envs)
-    gpu_pool_active = bool(experiment.env.compute_backend == "gpu" and requested_num_envs > 1)
+    gpu_pool_active = bool(experiment.env.compute_backend == "gpu")
     process_envs = bool(requested_process_envs and not gpu_pool_active)
     process_start_method = str(args.process_start_method or experiment.training.process_start_method)
     eval_randomization_mode = args.eval_randomization_mode or experiment.evaluation.randomization_mode
