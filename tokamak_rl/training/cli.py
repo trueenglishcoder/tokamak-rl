@@ -89,6 +89,12 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint_interval_steps = args.checkpoint_interval_steps if args.checkpoint_interval_steps is not None else experiment.artifacts.checkpoint_interval_steps
     max_step_checkpoints = args.max_step_checkpoints if args.max_step_checkpoints is not None else experiment.artifacts.max_step_checkpoints
     export_best_actor = bool(experiment.artifacts.export_best_actor and not args.no_export_best_actor)
+    requested_eval_episodes = int(args.eval_episodes if args.eval_episodes is not None else experiment.evaluation.episodes)
+    eval_num_envs = _resolve_eval_num_envs(
+        compute_backend=experiment.env.compute_backend,
+        requested_num_envs=requested_num_envs,
+        eval_episodes=requested_eval_episodes,
+    )
     run_metadata = _experiment_run_metadata(experiment=experiment, trainer_name=trainer_name)
     run_metadata["process_envs"] = process_envs
     run_metadata["requested_process_envs"] = requested_process_envs
@@ -96,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     run_metadata["process_start_method"] = process_start_method if process_envs else None
     eval_randomization_mode = args.eval_randomization_mode or experiment.evaluation.randomization_mode
     run_metadata["evaluation_randomization_mode"] = eval_randomization_mode
+    run_metadata["evaluation_num_envs"] = eval_num_envs
     wandb = _resolve_wandb_config(args=args, base=experiment.wandb, experiment_name=experiment.name)
     run_metadata["wandb"] = asdict(wandb)
     env_factory = _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method, num_envs=requested_num_envs)
@@ -104,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         process_envs=process_envs,
         process_start_method=process_start_method,
         randomization_mode=eval_randomization_mode,
-        num_envs=1,
+        num_envs=eval_num_envs,
     )
     if trainer_name == "simple":
         cfg = SimpleTrainerConfig(
@@ -120,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_interval_steps=checkpoint_interval_steps,
             max_step_checkpoints=max_step_checkpoints,
             resume_checkpoint=args.resume_checkpoint,
-            eval_episodes=args.eval_episodes if args.eval_episodes is not None else experiment.evaluation.episodes,
+            eval_episodes=requested_eval_episodes,
             eval_max_steps=args.eval_max_steps if args.eval_max_steps is not None else experiment.evaluation.max_steps,
             eval_seed=experiment.evaluation.validation_seed,
             device=args.device if args.device is not None else experiment.training.device,
@@ -163,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_interval_steps=checkpoint_interval_steps,
             max_step_checkpoints=max_step_checkpoints,
             resume_checkpoint=args.resume_checkpoint,
-            eval_episodes=args.eval_episodes if args.eval_episodes is not None else experiment.evaluation.episodes,
+            eval_episodes=requested_eval_episodes,
             eval_max_steps=args.eval_max_steps if args.eval_max_steps is not None else experiment.evaluation.max_steps,
             eval_seed=experiment.evaluation.validation_seed,
             device=args.device if args.device is not None else experiment.training.device,
@@ -228,6 +235,16 @@ def _resolve_wandb_config(*, args, base: WandBConfig, experiment_name: str) -> W
         log_interval_steps=int(args.wandb_log_interval_steps if args.wandb_log_interval_steps is not None else base.log_interval_steps),
         log_artifacts=bool(base.log_artifacts and not args.wandb_no_artifacts),
     )
+
+
+def _resolve_eval_num_envs(*, compute_backend: str, requested_num_envs: int, eval_episodes: int) -> int:
+    if int(eval_episodes) <= 0:
+        raise ValueError("eval_episodes must be > 0")
+    if int(requested_num_envs) <= 0:
+        raise ValueError("num_envs must be > 0")
+    if str(compute_backend) == "gpu":
+        return max(1, min(int(requested_num_envs), int(eval_episodes)))
+    return 1
 
 
 def _make_env_factory(*, experiment, process_envs: bool, process_start_method: str, num_envs: int = 1):

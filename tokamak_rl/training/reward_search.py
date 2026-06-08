@@ -17,7 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 from tokamak_rl.config import load_experiment_config
 from tokamak_rl.rewards import JointCurrentBoundaryReward
-from tokamak_rl.training.cli import _experiment_run_metadata, _make_env_factory, _make_eval_env_factory
+from tokamak_rl.training.cli import _experiment_run_metadata, _make_env_factory, _make_eval_env_factory, _resolve_eval_num_envs
 from tokamak_rl.training.diagnostics import json_safe
 from tokamak_rl.training.simple_actor_critic import SimpleTrainerConfig, train_simple_actor_critic
 from tokamak_rl.training.tcv_style_actor_critic import TCVStyleTrainerConfig, train_tcv_style_actor_critic
@@ -203,13 +203,19 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
     process_envs = bool(requested_process_envs and not gpu_pool_active)
     process_start_method = str(args.process_start_method or experiment.training.process_start_method)
     eval_randomization_mode = args.eval_randomization_mode or experiment.evaluation.randomization_mode
+    requested_eval_episodes = int(args.eval_episodes if args.eval_episodes is not None else experiment.evaluation.episodes)
+    eval_num_envs = _resolve_eval_num_envs(
+        compute_backend=experiment.env.compute_backend,
+        requested_num_envs=requested_num_envs,
+        eval_episodes=requested_eval_episodes,
+    )
     env_factory = _make_env_factory(experiment=experiment, process_envs=process_envs, process_start_method=process_start_method, num_envs=requested_num_envs)
     eval_env_factory = _make_eval_env_factory(
         experiment=experiment,
         process_envs=process_envs,
         process_start_method=process_start_method,
         randomization_mode=eval_randomization_mode,
-        num_envs=1,
+        num_envs=eval_num_envs,
     )
     run_metadata = _experiment_run_metadata(experiment=experiment, trainer_name=trainer_name)
     run_metadata["reward_search"] = {
@@ -220,6 +226,7 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
         "requested_process_envs": requested_process_envs,
         "process_envs": process_envs,
         "gpu_env_pool_active": gpu_pool_active,
+        "evaluation_num_envs": eval_num_envs,
     }
     wandb = _candidate_wandb_config(args=args, experiment_name=experiment.name, candidate=candidate)
     run_metadata["wandb"] = asdict(wandb)
@@ -236,7 +243,7 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
             checkpoint_dir=checkpoint_dir,
             checkpoint_interval_steps=args.checkpoint_interval_steps if bool(args.save_checkpoints) else None,
             max_step_checkpoints=args.max_step_checkpoints if bool(args.save_checkpoints) else None,
-            eval_episodes=args.eval_episodes if args.eval_episodes is not None else experiment.evaluation.episodes,
+            eval_episodes=requested_eval_episodes,
             eval_max_steps=args.eval_max_steps if args.eval_max_steps is not None else experiment.evaluation.max_steps,
             eval_seed=experiment.evaluation.validation_seed,
             device=args.device if args.device is not None else experiment.training.device,
@@ -266,7 +273,7 @@ def run_candidate(*, experiment, trainer_name: str, args, candidate: RewardCandi
             checkpoint_dir=checkpoint_dir,
             checkpoint_interval_steps=args.checkpoint_interval_steps if bool(args.save_checkpoints) else None,
             max_step_checkpoints=args.max_step_checkpoints if bool(args.save_checkpoints) else None,
-            eval_episodes=args.eval_episodes if args.eval_episodes is not None else experiment.evaluation.episodes,
+            eval_episodes=requested_eval_episodes,
             eval_max_steps=args.eval_max_steps if args.eval_max_steps is not None else experiment.evaluation.max_steps,
             eval_seed=experiment.evaluation.validation_seed,
             device=args.device if args.device is not None else experiment.training.device,
