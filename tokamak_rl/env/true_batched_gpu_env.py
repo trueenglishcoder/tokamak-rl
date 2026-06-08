@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from tokamak_rl.contracts import KNOWN_TERMINATION_REASONS, TRAINING_READINESS_CONTRACT_VERSION
 from tokamak_rl.env.config import EnvConfig
 from tokamak_rl.env.tokamak_env import _clip_boundary_parameters_to_bounds, _coerce_seed, _margin_below, _mix_seed, _sample_interval, _termination_config_metadata
 from tokamak_rl.observations import ObservationSchema
@@ -397,15 +398,54 @@ class TrueBatchedGpuTokamakEnv:
             "sampled_initial_state": self._initial_metadata[index],
             "randomization": {"enabled": False, "seed": index},
             "compute": dict(self.compute_metadata),
-            "training_contract": {
-                "contract_version": "training_readiness_v1",
-                "simulator": {"boundary_mode": str(self.loaded_cfg.boundary_mode), "t_step": float(self.loaded_cfg.physics.t_step), "compute_backend": "gpu"},
-                "environment": {"scenario_name": str(self.cfg.scenario_name), "angles": int(self.cfg.angles), "max_episode_steps": int(self.cfg.max_episode_steps)},
-                "observation_schema": self.schema.to_metadata(),
-                "target_preview": {"steps": int(self.cfg.target_preview_steps), "stride": int(self.cfg.target_preview_stride)},
-                "gpu_env_pool": {"enabled": True, "backend": "true_batched_gpu", "pool_size": int(self.num_envs)},
-            },
+            "training_contract": self._training_contract_metadata(),
             "gpu_env_pool": {"enabled": True, "backend": "true_batched_gpu", "pool_size": int(self.num_envs), "slot_index": int(index), "process_envs": False},
+        }
+
+    def _training_contract_metadata(self) -> dict[str, object]:
+        return {
+            "contract_version": TRAINING_READINESS_CONTRACT_VERSION,
+            "simulator": {
+                "config_path": str(self.cfg.sim_config_path),
+                "initial_currents_path": None if self.cfg.initial_currents_path is None else str(self.cfg.initial_currents_path),
+                "replay_initial_state_candidates": 0 if self.cfg.replay_initial_state is None else len(self.cfg.replay_initial_state.candidates),
+                "range_initial_state_enabled": self.cfg.range_initial_state is not None,
+                "boundary_mode": str(self.loaded_cfg.boundary_mode),
+                "limiter_name": self.loaded_cfg.limiter_name,
+                "t_step": float(self.loaded_cfg.physics.t_step),
+                "compute_backend": "gpu",
+            },
+            "environment": {
+                "scenario_name": str(self.cfg.scenario_name),
+                "scenario_args": dict(self.cfg.scenario_args),
+                "angles": int(self.cfg.angles),
+                "max_episode_steps": int(self.cfg.max_episode_steps),
+                "realism_enabled": bool(self.cfg.realism_enabled),
+                "resample_references_on_reset": bool(self.cfg.resample_references_on_reset),
+                "initial_ip": None if self.cfg.initial_ip is None else float(self.cfg.initial_ip),
+                "initial_coil_currents": str(self.cfg.initial_coil_currents),
+                "initial_ip_scale": None if self.cfg.initial_ip_scale is None else float(self.cfg.initial_ip_scale),
+            },
+            "observation_schema": self.schema.to_metadata(),
+            "normalization": {
+                "ip_scale": float(self.ip_scale),
+                "radius_scale": float(self.radius_scale),
+                "current_scale": np.asarray(self.current_scale, dtype=float).tolist(),
+                "derivative_scale": np.asarray(self.derivative_scale, dtype=float).tolist(),
+                "phase": "step_index / max_episode_steps",
+            },
+            "target_preview": {
+                "steps": int(self.cfg.target_preview_steps),
+                "stride": int(self.cfg.target_preview_stride),
+            },
+            "action_schema": {
+                "action_dim": int(self.action_dim),
+                "action_range": [-1.0, 1.0],
+                "active_order": [f"pfc{i}" for i in range(self.n_pfc)] + [f"sol{i}" for i in range(self.n_sol)],
+                "derivative_scale": np.asarray(self.derivative_scale, dtype=float).tolist(),
+            },
+            "termination": {"known_reasons": list(KNOWN_TERMINATION_REASONS)},
+            "termination_config": _termination_config_metadata(self.cfg.termination),
         }
 
     def _machine_metadata(self) -> SimpleNamespace:
