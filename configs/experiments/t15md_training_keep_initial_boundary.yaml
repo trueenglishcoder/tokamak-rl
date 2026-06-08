@@ -94,7 +94,7 @@ sim:
     current_limit_margin_min: null
     derivative_limit_margin_min: null
     measured_boundary_missing_steps: null
-reward_config: ../rewards/joint_current_boundary.yaml
+reward_config: ../rewards/static_boundary_candidate_11.yaml
 randomization_config: ../randomization/conservative.yaml
 evaluation:
   deterministic: true

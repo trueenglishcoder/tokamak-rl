@@ -1,0 +1,9 @@
+ip_weight: 2.0
+shape_weight: 2.0
+action_weight: 0.001
+delta_action_weight: 0.001
+termination_penalty: 20.0
+ip_tolerance_norm: 0.05
+shape_tolerance_norm: 0.02
+current_limit_weight: 0.0
+derivative_limit_weight: 0.0
