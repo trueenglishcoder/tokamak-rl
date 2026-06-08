@@ -927,7 +927,10 @@ def _throughput_metrics(
     evaluation_time_s: float,
 ) -> dict[str, object]:
     elapsed = max(float(total_elapsed_s), 1.0e-12)
+    collection = max(float(collection_time_s), 1.0e-12)
+    env_step = max(float(env_step_time_s), 1.0e-12)
     learner = max(float(learner_time_s), 1.0e-12)
+    overall_steps_per_second = float(total_steps) / elapsed
     return {
         "total_elapsed_s": float(total_elapsed_s),
         "collection_time_s": float(collection_time_s),
@@ -936,7 +939,10 @@ def _throughput_metrics(
         "replay_sampling_time_s": float(replay_sampling_time_s),
         "learner_time_s": float(learner_time_s),
         "evaluation_time_s": float(evaluation_time_s),
-        "env_steps_per_second": float(total_steps) / elapsed,
+        "env_steps_per_second": overall_steps_per_second,
+        "overall_steps_per_second": overall_steps_per_second,
+        "collection_steps_per_second": float(total_steps) / collection,
+        "env_step_only_steps_per_second": float(total_steps) / env_step,
         "learner_updates_per_second": float(update_count) / learner if int(update_count) > 0 else 0.0,
         "update_to_data_ratio": float(update_count) / max(float(total_steps), 1.0),
     }

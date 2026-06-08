@@ -81,6 +81,8 @@ class ExperimentTrainingConfig:
     num_envs: int = 1
     updates_per_episode: int = 1
     updates_per_env_step: int = 0
+    rollout_chunk_length: int | None = None
+    updates_per_rollout_chunk: int | None = None
     max_learner_catchup_updates: int | None = None
     process_envs: bool = False
     process_start_method: str = "spawn"
@@ -202,6 +204,8 @@ def _load_training_config(value: object) -> ExperimentTrainingConfig:
         "num_envs",
         "updates_per_episode",
         "updates_per_env_step",
+        "rollout_chunk_length",
+        "updates_per_rollout_chunk",
         "max_learner_catchup_updates",
         "process_envs",
         "process_start_method",
@@ -243,6 +247,8 @@ def _load_training_config(value: object) -> ExperimentTrainingConfig:
         num_envs=_positive_int(value.get("num_envs", 1), "training.num_envs"),
         updates_per_episode=_positive_int(value.get("updates_per_episode", 1), "training.updates_per_episode"),
         updates_per_env_step=_nonnegative_int(value.get("updates_per_env_step", 0), "training.updates_per_env_step"),
+        rollout_chunk_length=None if value.get("rollout_chunk_length") is None else _positive_int(value.get("rollout_chunk_length"), "training.rollout_chunk_length"),
+        updates_per_rollout_chunk=None if value.get("updates_per_rollout_chunk") is None else _positive_int(value.get("updates_per_rollout_chunk"), "training.updates_per_rollout_chunk"),
         max_learner_catchup_updates=None if value.get("max_learner_catchup_updates") is None else _positive_int(value.get("max_learner_catchup_updates"), "training.max_learner_catchup_updates"),
         process_envs=_bool(value.get("process_envs", False), "training.process_envs"),
         process_start_method=start_method,

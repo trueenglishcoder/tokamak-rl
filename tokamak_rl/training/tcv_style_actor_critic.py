@@ -25,7 +25,7 @@ from tokamak_rl.training.device import resolve_training_device
 from tokamak_rl.training.export_artifacts import export_best_actor_artifact
 from tokamak_rl.training.progress import TrainingProgressBar
 from tokamak_rl.training.recurrent_critic import RecurrentUpdateResult, recurrent_critic_update_once
-from tokamak_rl.training.sequence_replay import EpisodeReplayBuffer
+from tokamak_rl.training.sequence_replay import EpisodeReplayBuffer, TensorEpisodeReplayBuffer
 from tokamak_rl.training.wandb_logging import WandBConfig, WandBLogger
 
 
@@ -62,6 +62,8 @@ class TCVStyleTrainerConfig:
     num_envs: int = 1
     updates_per_episode: int = 1
     updates_per_env_step: int = 0
+    rollout_chunk_length: int | None = None
+    updates_per_rollout_chunk: int | None = None
     max_learner_catchup_updates: int | None = None
     seed: int = 0
     eval_episodes: int = 1
@@ -105,6 +107,10 @@ class TCVStyleTrainerConfig:
             raise ValueError("warmup_steps must be >= 0")
         if int(self.updates_per_env_step) < 0:
             raise ValueError("updates_per_env_step must be >= 0")
+        if self.rollout_chunk_length is not None and int(self.rollout_chunk_length) <= 0:
+            raise ValueError("rollout_chunk_length must be > 0 when set")
+        if self.updates_per_rollout_chunk is not None and int(self.updates_per_rollout_chunk) <= 0:
+            raise ValueError("updates_per_rollout_chunk must be > 0 when set")
         if self.max_learner_catchup_updates is not None and int(self.max_learner_catchup_updates) <= 0:
             raise ValueError("max_learner_catchup_updates must be > 0 when set")
         if self.eval_interval_steps is not None and int(self.eval_interval_steps) <= 0:
@@ -501,8 +507,8 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
                         actor_opt=actor_opt,
                         critic_opt=critic_opt,
                         log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty,
-                            log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
-                            mpo_kl_opt=mpo_kl_opt,
+                        log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
+                        mpo_kl_opt=mpo_kl_opt,
                         cfg=cfg,
                         obs_dim=obs_dim,
                         action_dim=action_dim,
@@ -525,8 +531,8 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
                         actor_opt=actor_opt,
                         critic_opt=critic_opt,
                         log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty,
-                            log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
-                            mpo_kl_opt=mpo_kl_opt,
+                        log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
+                        mpo_kl_opt=mpo_kl_opt,
                         cfg=cfg,
                         obs_dim=obs_dim,
                         action_dim=action_dim,
@@ -607,42 +613,6 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
                     reset_record=reset_metadata[env_index],
                 )
             )
-            update_t0 = time.perf_counter()
-            update_index = _run_recurrent_updates(
-                replay,
-                rng=rng,
-                actor=actor,
-                actor_target=actor_target,
-                q1=q1,
-                q2=q2,
-                q1_target=q1_target,
-                q2_target=q2_target,
-                actor_opt=actor_opt,
-                critic_opt=critic_opt,
-                log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty,
-                log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
-                mpo_kl_opt=mpo_kl_opt,
-                torch_generator=torch_generator,
-                cfg=cfg,
-                updates=_bounded_update_count(int(cfg.updates_per_episode), cfg),
-                update_index=update_index,
-                step_count=step_count,
-                device=device,
-                critic_losses=critic_losses,
-                actor_losses=actor_losses,
-                mpo_temperature_losses=mpo_temperature_losses,
-                mpo_temperatures=mpo_temperatures,
-                mpo_mean_kls=mpo_mean_kls,
-                mpo_std_kls=mpo_std_kls,
-                mpo_kl_dual_losses=mpo_kl_dual_losses,
-                mpo_mean_kl_penalties=mpo_mean_kl_penalties,
-                mpo_std_kl_penalties=mpo_std_kl_penalties,
-                valid_steps_per_update=valid_steps_per_update,
-                loss_rows=loss_rows,
-                timing=timing,
-            )
-            learner_time_s += time.perf_counter() - update_t0
-
     eval_t0 = time.perf_counter()
     final_eval = evaluate_tcv_actor_detailed(eval_factory, actor, episodes=int(cfg.eval_episodes), max_steps=int(cfg.eval_max_steps), seed=_eval_seed_base(cfg), device=device)
     evaluation_time_s += time.perf_counter() - eval_t0
@@ -661,8 +631,8 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
             actor_opt=actor_opt,
             critic_opt=critic_opt,
             log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty,
-                            log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
-                            mpo_kl_opt=mpo_kl_opt,
+            log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
+            mpo_kl_opt=mpo_kl_opt,
             cfg=cfg,
             obs_dim=obs_dim,
             action_dim=action_dim,
@@ -684,8 +654,8 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
         actor_opt=actor_opt,
         critic_opt=critic_opt,
         log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty,
-                            log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
-                            mpo_kl_opt=mpo_kl_opt,
+        log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
+        mpo_kl_opt=mpo_kl_opt,
         cfg=cfg,
         obs_dim=obs_dim,
         action_dim=action_dim,
@@ -707,8 +677,8 @@ def train_tcv_style_actor_critic(env_factory: EnvFactory, cfg: TCVStyleTrainerCo
             actor_opt=actor_opt,
             critic_opt=critic_opt,
             log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty,
-                            log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
-                            mpo_kl_opt=mpo_kl_opt,
+            log_mpo_std_kl_penalty=log_mpo_std_kl_penalty,
+            mpo_kl_opt=mpo_kl_opt,
             cfg=cfg,
             obs_dim=obs_dim,
             action_dim=action_dim,
@@ -826,10 +796,11 @@ def _train_tcv_style_actor_critic_true_batched_gpu(env_factory: EnvFactory, cfg:
     eval_factory = env_factory if eval_env_factory is None else eval_env_factory
     try:
         from tokamak_control.core.batched_gpu_simulator import configure_batched_gpu_simulator_profiling
-
-        configure_batched_gpu_simulator_profiling(enabled=True, summary_every=0, reset=True)
-    except Exception:
-        pass
+    except ImportError as exc:
+        raise RuntimeError("true batched GPU training requires tokamak-sim batched GPU simulator profiling support") from exc
+    configure_batched_gpu_simulator_profiling(enabled=True, summary_every=0, reset=True)
+    if int(cfg.total_steps) % int(cfg.num_envs) != 0:
+        raise ValueError("true batched GPU training requires total_steps to be divisible by num_envs so it never advances unused simulator slots")
     rng = np.random.default_rng(int(cfg.seed))
     torch.manual_seed(int(cfg.seed))
     torch_generator = torch.Generator(device="cpu").manual_seed(int(cfg.seed))
@@ -843,11 +814,14 @@ def _train_tcv_style_actor_critic_true_batched_gpu(env_factory: EnvFactory, cfg:
     evaluation_time_s = 0.0
 
     env = env_factory()
-    if not hasattr(env, "reset_batch") or not hasattr(env, "step_batch"):
-        raise RuntimeError("true batched GPU factory did not return a batch environment")
+    for method_name in ("reset_batch_tensor", "step_batch_tensor", "reset_indices_tensor"):
+        if not hasattr(env, method_name):
+            raise RuntimeError(f"true batched GPU training requires env.{method_name}()")
     seeds = np.arange(int(cfg.seed), int(cfg.seed) + int(cfg.num_envs), dtype=int)
-    reset = env.reset_batch(seeds)
-    observations = np.asarray(reset.observations, dtype=np.float32)
+    reset = env.reset_batch_tensor(seeds)
+    if not torch.is_tensor(reset.observations):
+        raise RuntimeError("true batched GPU reset_batch_tensor must return tensor observations")
+    observations = reset.observations.to(device=device, dtype=torch.float32)
     obs_dim = int(env.obs_dim)
     action_dim = int(env.action_dim)
     if observations.shape != (int(cfg.num_envs), obs_dim):
@@ -901,13 +875,17 @@ def _train_tcv_style_actor_critic_true_batched_gpu(env_factory: EnvFactory, cfg:
         q1_target.load_state_dict(q1.state_dict())
         q2_target.load_state_dict(q2.state_dict())
 
-    replay = EpisodeReplayBuffer(capacity_episodes=int(cfg.replay_capacity_episodes), obs_dim=obs_dim, action_dim=action_dim)
-    episode_builders = [_EpisodeBuilder() for _ in range(int(cfg.num_envs))]
-    running_returns = [0.0 for _ in range(int(cfg.num_envs))]
-    running_lengths = [0 for _ in range(int(cfg.num_envs))]
-    running_ip_errors: list[list[float]] = [[] for _ in range(int(cfg.num_envs))]
-    running_shape_errors: list[list[float]] = [[] for _ in range(int(cfg.num_envs))]
-    running_boundary_failure_steps = [0 for _ in range(int(cfg.num_envs))]
+    replay = TensorEpisodeReplayBuffer(capacity_episodes=int(cfg.replay_capacity_episodes), obs_dim=obs_dim, action_dim=action_dim, device=device)
+    running_returns = torch.zeros((int(cfg.num_envs),), dtype=torch.float64, device=device)
+    running_lengths = torch.zeros((int(cfg.num_envs),), dtype=torch.int64, device=device)
+    running_ip_error_sum = torch.zeros((int(cfg.num_envs),), dtype=torch.float64, device=device)
+    running_shape_error_sum = torch.zeros((int(cfg.num_envs),), dtype=torch.float64, device=device)
+    running_error_count = torch.zeros((int(cfg.num_envs),), dtype=torch.int64, device=device)
+    running_boundary_failure_steps = torch.zeros((int(cfg.num_envs),), dtype=torch.int64, device=device)
+    tracking_ip_error_sum = torch.zeros((), dtype=torch.float64, device=device)
+    tracking_shape_error_sum = torch.zeros((), dtype=torch.float64, device=device)
+    tracking_boundary_found_count = torch.zeros((), dtype=torch.int64, device=device)
+    tracking_count = torch.zeros((), dtype=torch.int64, device=device)
     episode_returns: list[float] = []
     episode_lengths: list[int] = []
     episode_indices = [0 for _ in range(int(cfg.num_envs))]
@@ -931,62 +909,143 @@ def _train_tcv_style_actor_critic_true_batched_gpu(env_factory: EnvFactory, cfg:
     latest_checkpoint_path: Path | None = None
     reward_writer = RewardComponentWriter(cfg.output_dir)
     progress = TrainingProgressBar(total_steps=int(cfg.total_steps), label="tcv_style_batched_gpu", enabled=bool(cfg.progress))
-    wandb_logger = WandBLogger(cfg.wandb, config=_checkpoint_safe_config(cfg), run_metadata={**json_safe(cfg.run_metadata), "device": device_selection.to_metadata(), "trainer": "tcv_style_recurrent_actor_critic_v1", "env_backend": "true_batched_gpu"})
+    rollout_chunk_length = int(cfg.rollout_chunk_length if cfg.rollout_chunk_length is not None else cfg.sequence_length)
+    updates_per_rollout_chunk = int(cfg.updates_per_rollout_chunk if cfg.updates_per_rollout_chunk is not None else cfg.updates_per_episode)
+    chunk_buffer = _TensorRolloutChunkBuffer(num_envs=int(cfg.num_envs), chunk_length=rollout_chunk_length, obs_dim=obs_dim, action_dim=action_dim, device=device)
+    replay_chunk_flushes = 0
+    wandb_logger = WandBLogger(
+        cfg.wandb,
+        config=_checkpoint_safe_config(cfg),
+        run_metadata={
+            **json_safe(cfg.run_metadata),
+            "device": device_selection.to_metadata(),
+            "trainer": "tcv_style_recurrent_actor_critic_v1",
+            "env_backend": "true_batched_gpu",
+            "replay_unit": "rollout_chunk",
+            "rollout_chunk_length": rollout_chunk_length,
+            "updates_per_rollout_chunk": updates_per_rollout_chunk,
+        },
+    )
     progress.update(0, status=_tcv_progress_status(replay_episodes=0, replay_transitions=0, update_count=0), force=True)
 
     try:
         while step_count < int(cfg.total_steps):
-            active_count = min(int(cfg.num_envs), int(cfg.total_steps) - step_count)
-            warmup = np.asarray([step_count + i < int(cfg.warmup_steps) for i in range(int(cfg.num_envs))], dtype=bool)
+            batch_env_count = int(cfg.num_envs)
+            warmup_count = min(max(int(cfg.warmup_steps) - int(step_count), 0), batch_env_count)
             collect_t0 = time.perf_counter()
-            actions = _select_training_actions_batch(actor, observations, action_dim=action_dim, warmup=warmup, rng=rng, torch_generator=torch_generator, device=device)
+            actions = _select_training_actions_tensor(actor, observations, action_dim=action_dim, warmup_count=warmup_count, torch_generator=torch_generator, device=device)
             action_elapsed = time.perf_counter() - collect_t0
             actor_inference_time_s += action_elapsed
             collection_time_s += action_elapsed
             collect_t0 = time.perf_counter()
-            step = env.step_batch(actions)
+            step = env.step_batch_tensor(actions)
             step_elapsed = time.perf_counter() - collect_t0
             env_step_time_s += step_elapsed
             collection_time_s += step_elapsed
-            next_observations = np.asarray(step.observations, dtype=np.float32)
-            done_indices: list[int] = []
+            _require_tensor_step(step, batch_env_count=batch_env_count)
+            next_observations = step.observations.to(device=device, dtype=torch.float32)
+            rewards_t = step.rewards.to(device=device, dtype=torch.float32)
+            terminated_t = step.terminated.to(device=device, dtype=torch.bool)
+            truncated_t = step.truncated.to(device=device, dtype=torch.bool)
+            components_t = step.components
+            reason_codes_t = step.reason_codes.to(device=device, dtype=torch.int64)
+            boundary_found_t = step.boundary_found.to(device=device, dtype=torch.bool)
+
+            ip_error_t = components_t.get("ip_error_norm", torch.zeros((int(cfg.num_envs),), dtype=torch.float32, device=device)).to(device=device)
+            shape_error_t = components_t.get("shape_error_norm", torch.zeros((int(cfg.num_envs),), dtype=torch.float32, device=device)).to(device=device)
+            running_returns += rewards_t.to(dtype=torch.float64)
+            running_lengths += 1
+            running_ip_error_sum += ip_error_t.to(dtype=torch.float64)
+            running_shape_error_sum += shape_error_t.to(dtype=torch.float64)
+            running_error_count += 1
+            running_boundary_failure_steps += (~boundary_found_t).to(dtype=torch.int64)
+            tracking_ip_error_sum += torch.sum(ip_error_t.to(dtype=torch.float64))
+            tracking_shape_error_sum += torch.sum(shape_error_t.to(dtype=torch.float64))
+            tracking_boundary_found_count += torch.count_nonzero(boundary_found_t)
+            tracking_count += batch_env_count
+
+            done_t = terminated_t | truncated_t
+            chunk_buffer.add_batch(observations, actions, rewards_t, next_observations, terminated_t, truncated_t)
+            done_indices = _tensor_index_list(done_t)
+            ready_indices = chunk_buffer.ready_indices()
+            flush_indices = sorted(set(done_indices).union(ready_indices))
             reset_seeds: list[int] = []
-            for env_index in range(active_count):
-                reward = float(step.rewards[env_index])
-                terminated = bool(step.terminated[env_index])
-                truncated = bool(step.truncated[env_index])
-                info = step.infos[env_index]
-                diagnostics.record_step_info(info)
-                reward_components = info.get("reward_components") if isinstance(info, dict) else None
-                reward_writer.record(step=step_count + env_index + 1, env_index=env_index, episode=episode_indices[env_index], components=reward_components)
-                wandb_logger.log({"train": {"reward": reward, "env_index": int(env_index), "episode": int(episode_indices[env_index]), "terminated": terminated, "truncated": truncated}, "reward_components": reward_components if isinstance(reward_components, dict) else {}}, step=step_count + env_index + 1)
-                episode_builders[env_index].add(observations[env_index], actions[env_index], reward, next_observations[env_index], terminated, truncated)
-                running_returns[env_index] += reward
-                running_lengths[env_index] += 1
-                record_episode_step_artifacts(info, ip_errors=running_ip_errors[env_index], shape_errors=running_shape_errors[env_index], boundary_failure_counter=running_boundary_failure_steps, env_index=env_index)
-                if terminated or truncated:
-                    replay.add_episode(**episode_builders[env_index].to_episode_arrays())
-                    episode_builders[env_index].clear()
-                    episode_returns.append(float(running_returns[env_index]))
-                    episode_lengths.append(int(running_lengths[env_index]))
-                    episode_record = episode_artifact_record(env_index=env_index, episode=episode_indices[env_index], episode_return=running_returns[env_index], episode_length=running_lengths[env_index], terminated=terminated, truncated=truncated, termination_reason=termination_reason_from_step_info(info, terminated=terminated, truncated=truncated), ip_errors=running_ip_errors[env_index], shape_errors=running_shape_errors[env_index], boundary_failure_steps=running_boundary_failure_steps[env_index], reset_record=reset_metadata[env_index])
-                    episode_records.append(episode_record)
-                    wandb_logger.log_episode({**episode_record, "return": float(running_returns[env_index]), "length": int(running_lengths[env_index])}, step=step_count + env_index + 1)
-                    episode_indices[env_index] += 1
-                    running_returns[env_index] = 0.0
-                    running_lengths[env_index] = 0
-                    running_ip_errors[env_index].clear()
-                    running_shape_errors[env_index].clear()
-                    running_boundary_failure_steps[env_index] = 0
-                    done_indices.append(env_index)
-                    reset_seeds.append(int(cfg.seed) + 20_000 + step_count + env_index)
-            observations = next_observations
-            step_count += active_count
+            flushed_chunks = 0
+            for env_index in flush_indices:
+                if chunk_buffer.has_data(env_index):
+                    replay.add_episode(**chunk_buffer.flush(env_index))
+                    flushed_chunks += 1
+                    replay_chunk_flushes += 1
             if done_indices:
+                terminated_done = _tensor_bool_values(terminated_t, done_indices)
+                truncated_done = _tensor_bool_values(truncated_t, done_indices)
+                reason_done = _tensor_int_values(reason_codes_t, done_indices)
+                returns_done = _tensor_float_values(running_returns, done_indices)
+                lengths_done = _tensor_int_values(running_lengths, done_indices)
+                error_counts_done = _tensor_int_values(running_error_count, done_indices)
+                ip_error_done = _tensor_float_values(running_ip_error_sum, done_indices)
+                shape_error_done = _tensor_float_values(running_shape_error_sum, done_indices)
+                boundary_failure_done = _tensor_int_values(running_boundary_failure_steps, done_indices)
+                for local, env_index in enumerate(done_indices):
+                    episode_return = float(returns_done[local])
+                    episode_length = int(lengths_done[local])
+                    episode_record = _episode_artifact_record_from_means(
+                        env_index=env_index,
+                        episode=episode_indices[env_index],
+                        episode_return=episode_return,
+                        episode_length=episode_length,
+                        terminated=bool(terminated_done[local]),
+                        truncated=bool(truncated_done[local]),
+                        termination_reason=_reason_from_code_int(int(reason_done[local])),
+                        ip_error_sum=float(ip_error_done[local]),
+                        shape_error_sum=float(shape_error_done[local]),
+                        error_count=int(error_counts_done[local]),
+                        boundary_failure_steps=int(boundary_failure_done[local]),
+                        reset_record=reset_metadata[env_index],
+                    )
+                    episode_returns.append(episode_return)
+                    episode_lengths.append(episode_length)
+                    episode_records.append(episode_record)
+                    wandb_logger.log_episode({**episode_record, "return": episode_return, "length": episode_length}, step=step_count + env_index + 1)
+                    episode_indices[env_index] += 1
+                    reset_seeds.append(int(cfg.seed) + 20_000 + step_count + env_index)
+                done_indices_t = torch.as_tensor(done_indices, dtype=torch.long, device=device)
+                running_returns[done_indices_t] = 0.0
+                running_lengths[done_indices_t] = 0
+                running_ip_error_sum[done_indices_t] = 0.0
+                running_shape_error_sum[done_indices_t] = 0.0
+                running_error_count[done_indices_t] = 0
+                running_boundary_failure_steps[done_indices_t] = 0
+            observations = next_observations
+            step_count += batch_env_count
+
+            log_interval = int(cfg.wandb.log_interval_steps) if cfg.wandb is not None else 1
+            if step_count % max(log_interval, 1) == 0:
+                mean_components = {name: float(torch.mean(values.to(dtype=torch.float32)).detach().cpu()) for name, values in components_t.items()}
+                reward_writer.record(step=step_count, env_index=-1, episode=-1, components=mean_components)
+                wandb_logger.log(
+                    {
+                        "train": {
+                            "reward": float(torch.mean(rewards_t).detach().cpu()),
+                            "terminated": int(torch.count_nonzero(terminated_t).detach().cpu()),
+                            "truncated": int(torch.count_nonzero(truncated_t).detach().cpu()),
+                            "episodes": len(episode_returns),
+                        },
+                        "reward_components": mean_components,
+                    },
+                    step=step_count,
+                    force=False,
+                )
+
+            if flushed_chunks > 0 and replay.size > 0:
                 update_t0 = time.perf_counter()
-                update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(int(cfg.updates_per_episode) * len(done_indices), cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
+                update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(updates_per_rollout_chunk * flushed_chunks, cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
                 learner_time_s += time.perf_counter() - update_t0
-                reset_obs, reset_infos = env.reset_indices(done_indices, reset_seeds)
+            if done_indices:
+                reset_obs, reset_infos = env.reset_indices_tensor(done_indices, reset_seeds)
+                if not torch.is_tensor(reset_obs):
+                    raise RuntimeError("true batched GPU reset_indices_tensor must return tensor observations")
+                reset_obs_t = reset_obs.to(device=device, dtype=torch.float32)
                 for local, env_index in enumerate(done_indices):
                     reset_info = reset_infos[local]
                     diagnostics.record_reset_info(reset_info)
@@ -994,26 +1053,63 @@ def _train_tcv_style_actor_critic_true_batched_gpu(env_factory: EnvFactory, cfg:
                         training_contract = _extract_training_contract(reset_info)
                     reset_metadata[env_index] = reset_artifact_record(reset_info, env_index=env_index, episode=episode_indices[env_index])
                     reference_records.append(dict(reset_metadata[env_index]))
-                    observations[env_index] = reset_obs[local]
+                    observations[env_index] = reset_obs_t[local]
             if int(cfg.updates_per_env_step) > 0 and replay.size > 0:
                 update_t0 = time.perf_counter()
-                update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(int(cfg.updates_per_env_step) * active_count, cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
+                update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(int(cfg.updates_per_env_step) * batch_env_count, cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
                 learner_time_s += time.perf_counter() - update_t0
+            if cfg.eval_interval_steps is not None and step_count % int(cfg.eval_interval_steps) == 0:
+                eval_t0 = time.perf_counter()
+                interval_eval = evaluate_tcv_actor_detailed(eval_factory, actor, episodes=int(cfg.eval_episodes), max_steps=int(cfg.eval_max_steps), seed=_eval_seed_base(cfg) + step_count, device=device)
+                evaluation_time_s += time.perf_counter() - eval_t0
+                interval_returns = interval_eval["returns"]
+                interval_mean = float(np.mean(interval_returns)) if interval_returns else 0.0
+                eval_history.append({"step": step_count, "returns": interval_returns, "mean_return": interval_mean, "tracking_diagnostics": interval_eval["tracking_diagnostics"]})
+                wandb_logger.log_eval({"mean_return": interval_mean, "tracking_diagnostics": interval_eval["tracking_diagnostics"]}, step=step_count)
+                if cfg.checkpoint_dir is not None and interval_mean > best_eval_score:
+                    best_eval_score = interval_mean
+                    best_checkpoint_path = _save_tcv_checkpoint(actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, cfg=cfg, obs_dim=obs_dim, action_dim=action_dim, total_steps=step_count, update_index=update_index, best_eval_score=best_eval_score, numpy_rng_state=rng.bit_generator.state, torch_generator_state=torch_generator.get_state(), training_contract=training_contract, path=Path(cfg.checkpoint_dir) / cfg.best_checkpoint_name)
+            if cfg.checkpoint_dir is not None and cfg.checkpoint_interval_steps is not None and step_count % int(cfg.checkpoint_interval_steps) == 0:
+                step_path = Path(cfg.checkpoint_dir) / f"step_{step_count:08d}.pt"
+                _save_tcv_checkpoint(actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, cfg=cfg, obs_dim=obs_dim, action_dim=action_dim, total_steps=step_count, update_index=update_index, best_eval_score=None if best_eval_score == float("-inf") else best_eval_score, numpy_rng_state=rng.bit_generator.state, torch_generator_state=torch_generator.get_state(), training_contract=training_contract, path=step_path)
+                _prune_step_checkpoints(Path(cfg.checkpoint_dir), keep=cfg.max_step_checkpoints)
+                latest_checkpoint_path = _save_tcv_checkpoint(actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, cfg=cfg, obs_dim=obs_dim, action_dim=action_dim, total_steps=step_count, update_index=update_index, best_eval_score=None if best_eval_score == float("-inf") else best_eval_score, numpy_rng_state=rng.bit_generator.state, torch_generator_state=torch_generator.get_state(), training_contract=training_contract, path=Path(cfg.checkpoint_dir) / cfg.latest_checkpoint_name)
             progress.update(step_count, status=_tcv_progress_status(replay_episodes=replay.size, replay_transitions=replay.total_transitions, update_count=update_index, critic_loss=critic_losses[-1] if critic_losses else None, actor_loss=actor_losses[-1] if actor_losses else None, episodes=len(episode_returns)))
+            wandb_logger.log(
+                {
+                    "train": _tcv_progress_status(replay_episodes=replay.size, replay_transitions=replay.total_transitions, update_count=update_index, critic_loss=critic_losses[-1] if critic_losses else None, actor_loss=actor_losses[-1] if actor_losses else None, episodes=len(episode_returns)),
+                    "throughput_live": {
+                        "replay_chunk_flushes": int(replay_chunk_flushes),
+                        "rollout_chunk_length": int(rollout_chunk_length),
+                        "updates_per_rollout_chunk": int(updates_per_rollout_chunk),
+                        "collection_steps_per_second": float(step_count) / max(float(collection_time_s), 1.0e-12),
+                        "env_step_only_steps_per_second": float(step_count) / max(float(env_step_time_s), 1.0e-12),
+                        "learner_updates_per_second": float(update_index) / max(float(learner_time_s), 1.0e-12) if int(update_index) > 0 else 0.0,
+                    },
+                },
+                step=step_count,
+            )
     finally:
         progress.close(status=_tcv_progress_status(replay_episodes=replay.size, replay_transitions=replay.total_transitions, update_count=update_index, critic_loss=critic_losses[-1] if critic_losses else None, actor_loss=actor_losses[-1] if actor_losses else None, episodes=len(episode_returns)))
         reward_writer.close()
         env.close()
 
-    for env_index, builder in enumerate(episode_builders):
-        if builder.length > 0:
-            replay.add_episode(**builder.to_episode_arrays())
-            episode_returns.append(float(running_returns[env_index]))
-            episode_lengths.append(int(running_lengths[env_index]))
-            episode_records.append(episode_artifact_record(env_index=env_index, episode=episode_indices[env_index], episode_return=running_returns[env_index], episode_length=running_lengths[env_index], terminated=False, truncated=True, termination_reason="training_horizon", ip_errors=running_ip_errors[env_index], shape_errors=running_shape_errors[env_index], boundary_failure_steps=running_boundary_failure_steps[env_index], reset_record=reset_metadata[env_index]))
-    if replay.size > 0:
+    final_tail_chunks = 0
+    for env_index in range(int(cfg.num_envs)):
+        if chunk_buffer.has_data(env_index):
+            replay.add_episode(**chunk_buffer.flush(env_index))
+            final_tail_chunks += 1
+            replay_chunk_flushes += 1
+        if int(running_lengths[env_index].detach().cpu()) > 0:
+            episode_return = float(running_returns[env_index].detach().cpu())
+            episode_length = int(running_lengths[env_index].detach().cpu())
+            error_count = int(running_error_count[env_index].detach().cpu())
+            episode_returns.append(episode_return)
+            episode_lengths.append(episode_length)
+            episode_records.append(_episode_artifact_record_from_means(env_index=env_index, episode=episode_indices[env_index], episode_return=episode_return, episode_length=episode_length, terminated=False, truncated=True, termination_reason="training_horizon", ip_error_sum=float(running_ip_error_sum[env_index].detach().cpu()), shape_error_sum=float(running_shape_error_sum[env_index].detach().cpu()), error_count=error_count, boundary_failure_steps=int(running_boundary_failure_steps[env_index].detach().cpu()), reset_record=reset_metadata[env_index]))
+    if final_tail_chunks > 0 and replay.size > 0:
         update_t0 = time.perf_counter()
-        update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(int(cfg.updates_per_episode), cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
+        update_index = _run_recurrent_updates(replay, rng=rng, actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, torch_generator=torch_generator, cfg=cfg, updates=_bounded_update_count(updates_per_rollout_chunk * final_tail_chunks, cfg), update_index=update_index, step_count=step_count, device=device, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, timing=timing)
         learner_time_s += time.perf_counter() - update_t0
 
     eval_t0 = time.perf_counter()
@@ -1021,12 +1117,16 @@ def _train_tcv_style_actor_critic_true_batched_gpu(env_factory: EnvFactory, cfg:
     evaluation_time_s += time.perf_counter() - eval_t0
     eval_returns = final_eval["returns"]
     final_mean = float(np.mean(eval_returns)) if eval_returns else 0.0
+    wandb_logger.log_eval({"mean_return": final_mean, "tracking_diagnostics": final_eval["tracking_diagnostics"]}, step=step_count)
     checkpoint_path = _save_tcv_checkpoint(actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, cfg=cfg, obs_dim=obs_dim, action_dim=action_dim, total_steps=step_count, update_index=update_index, best_eval_score=final_mean, numpy_rng_state=rng.bit_generator.state, torch_generator_state=torch_generator.get_state(), training_contract=training_contract) if cfg.checkpoint_dir is not None else None
-    latest_checkpoint_path = checkpoint_path
-    best_checkpoint_path = checkpoint_path
+    if cfg.checkpoint_dir is not None:
+        latest_checkpoint_path = _save_tcv_checkpoint(actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, cfg=cfg, obs_dim=obs_dim, action_dim=action_dim, total_steps=step_count, update_index=update_index, best_eval_score=final_mean, numpy_rng_state=rng.bit_generator.state, torch_generator_state=torch_generator.get_state(), training_contract=training_contract, path=Path(cfg.checkpoint_dir) / cfg.latest_checkpoint_name)
+        if final_mean > best_eval_score or best_checkpoint_path is None:
+            best_eval_score = final_mean
+            best_checkpoint_path = _save_tcv_checkpoint(actor=actor, actor_target=actor_target, q1=q1, q2=q2, q1_target=q1_target, q2_target=q2_target, actor_opt=actor_opt, critic_opt=critic_opt, log_mpo_mean_kl_penalty=log_mpo_mean_kl_penalty, log_mpo_std_kl_penalty=log_mpo_std_kl_penalty, mpo_kl_opt=mpo_kl_opt, cfg=cfg, obs_dim=obs_dim, action_dim=action_dim, total_steps=step_count, update_index=update_index, best_eval_score=best_eval_score, numpy_rng_state=rng.bit_generator.state, torch_generator_state=torch_generator.get_state(), training_contract=training_contract, path=Path(cfg.checkpoint_dir) / cfg.best_checkpoint_name)
     best_actor_export_dir = export_best_actor_artifact(checkpoint_path=best_checkpoint_path, output_dir=cfg.output_dir, training_contract=training_contract, metadata={"trainer": "tcv_style_recurrent_actor_critic_v1", "algorithm": "tcv_mpo_recurrent_actor_critic_v1", "run_metadata": cfg.run_metadata}) if bool(cfg.export_best_actor) else None
-    metrics_json, losses_csv = _write_tcv_artifacts(cfg=cfg, total_steps=step_count, replay_episodes=replay.size, replay_transitions=replay.total_transitions, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, episode_returns=episode_returns, episode_lengths=episode_lengths, eval_returns=eval_returns, eval_history=eval_history, episode_records=episode_records, reference_records=reference_records, tracking_diagnostics=diagnostics.summary(), eval_tracking_diagnostics=final_eval["tracking_diagnostics"], checkpoint_path=checkpoint_path, latest_checkpoint_path=latest_checkpoint_path, best_checkpoint_path=best_checkpoint_path, best_actor_export_dir=best_actor_export_dir, throughput=_throughput_metrics(total_steps=step_count, update_count=update_index, total_elapsed_s=time.perf_counter() - started_at, collection_time_s=collection_time_s, actor_inference_time_s=actor_inference_time_s, env_step_time_s=env_step_time_s, replay_sampling_time_s=float(timing["replay_sampling_time_s"]), learner_time_s=learner_time_s, evaluation_time_s=evaluation_time_s), device_metadata=device_selection.to_metadata())
-    wandb_logger.log_final({"total_steps": int(step_count), "replay_episodes": int(replay.size), "replay_transitions": int(replay.total_transitions), "critic_updates": len(critic_losses), "actor_updates": len(actor_losses), "eval_mean_return": final_mean, "tracking_diagnostics": diagnostics.summary(), "eval_tracking_diagnostics": final_eval["tracking_diagnostics"]}, artifact_paths={"metrics": metrics_json, "losses": losses_csv, "checkpoint": checkpoint_path, "latest_checkpoint": latest_checkpoint_path, "best_checkpoint": best_checkpoint_path, "best_actor_export": best_actor_export_dir}, step=step_count)
+    metrics_json, losses_csv = _write_tcv_artifacts(cfg=cfg, total_steps=step_count, replay_episodes=replay.size, replay_transitions=replay.total_transitions, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, loss_rows=loss_rows, episode_returns=episode_returns, episode_lengths=episode_lengths, eval_returns=eval_returns, eval_history=eval_history, episode_records=episode_records, reference_records=reference_records, tracking_diagnostics=_tensor_tracking_summary(ip_error_sum=tracking_ip_error_sum, shape_error_sum=tracking_shape_error_sum, boundary_found_count=tracking_boundary_found_count, count=tracking_count, reset_diagnostics=diagnostics), eval_tracking_diagnostics=final_eval["tracking_diagnostics"], checkpoint_path=checkpoint_path, latest_checkpoint_path=latest_checkpoint_path, best_checkpoint_path=best_checkpoint_path, best_actor_export_dir=best_actor_export_dir, throughput=_throughput_metrics(total_steps=step_count, update_count=update_index, total_elapsed_s=time.perf_counter() - started_at, collection_time_s=collection_time_s, actor_inference_time_s=actor_inference_time_s, env_step_time_s=env_step_time_s, replay_sampling_time_s=float(timing["replay_sampling_time_s"]), learner_time_s=learner_time_s, evaluation_time_s=evaluation_time_s), device_metadata=device_selection.to_metadata())
+    wandb_logger.log_final({"total_steps": int(step_count), "replay_episodes": int(replay.size), "replay_transitions": int(replay.total_transitions), "critic_updates": len(critic_losses), "actor_updates": len(actor_losses), "eval_mean_return": final_mean, "tracking_diagnostics": _tensor_tracking_summary(ip_error_sum=tracking_ip_error_sum, shape_error_sum=tracking_shape_error_sum, boundary_found_count=tracking_boundary_found_count, count=tracking_count, reset_diagnostics=diagnostics), "eval_tracking_diagnostics": final_eval["tracking_diagnostics"]}, artifact_paths={"metrics": metrics_json, "losses": losses_csv, "checkpoint": checkpoint_path, "latest_checkpoint": latest_checkpoint_path, "best_checkpoint": best_checkpoint_path, "best_actor_export": best_actor_export_dir}, step=step_count)
     wandb_logger.close()
     return TCVStyleTrainingResult(total_steps=step_count, replay_episodes=replay.size, replay_transitions=replay.total_transitions, critic_losses=critic_losses, actor_losses=actor_losses, mpo_temperature_losses=mpo_temperature_losses, mpo_temperatures=mpo_temperatures, mpo_mean_kls=mpo_mean_kls, mpo_std_kls=mpo_std_kls, mpo_kl_dual_losses=mpo_kl_dual_losses, mpo_mean_kl_penalties=mpo_mean_kl_penalties, mpo_std_kl_penalties=mpo_std_kl_penalties, valid_steps_per_update=valid_steps_per_update, episode_returns=episode_returns, episode_lengths=episode_lengths, eval_returns=eval_returns, eval_history=eval_history, checkpoint_path=checkpoint_path, metrics_json=metrics_json, losses_csv=losses_csv, latest_checkpoint_path=latest_checkpoint_path, best_checkpoint_path=best_checkpoint_path, best_actor_export_dir=best_actor_export_dir)
 
@@ -1074,42 +1174,60 @@ def evaluate_tcv_actor_detailed(env_factory: EnvFactory, actor: FeedForwardActor
 def _evaluate_tcv_actor_detailed_true_batched_gpu(env_factory: EnvFactory, actor: FeedForwardActor, *, episodes: int, max_steps: int, seed: int, device: torch.device | str = "cpu") -> dict[str, object]:
     device = torch.device(device)
     env = env_factory()
+    for method_name in ("reset_batch_tensor", "step_batch_tensor"):
+        if not hasattr(env, method_name):
+            raise RuntimeError(f"true batched GPU evaluation requires env.{method_name}()")
     batch = int(getattr(env, "num_envs", episodes))
     remaining = int(episodes)
     returns: list[float] = []
     diagnostics = TrainingDiagnostics()
+    tracking_ip_error_sum = torch.zeros((), dtype=torch.float64, device=device)
+    tracking_shape_error_sum = torch.zeros((), dtype=torch.float64, device=device)
+    tracking_boundary_found_count = torch.zeros((), dtype=torch.int64, device=device)
+    tracking_count = torch.zeros((), dtype=torch.int64, device=device)
     was_training = actor.training
     actor.eval()
     try:
         while remaining > 0:
             active = min(batch, remaining)
             seeds = np.arange(int(seed) + len(returns), int(seed) + len(returns) + batch, dtype=int)
-            reset = env.reset_batch(seeds)
-            obs = np.asarray(reset.observations, dtype=np.float32)
+            reset = env.reset_batch_tensor(seeds)
+            if not torch.is_tensor(reset.observations):
+                raise RuntimeError("true batched GPU reset_batch_tensor must return tensor observations")
+            obs = reset.observations.to(device=device, dtype=torch.float32)
             for info in reset.infos[:active]:
                 diagnostics.record_reset_info(info)
-            totals = np.zeros((batch,), dtype=float)
-            done = np.zeros((batch,), dtype=bool)
+            totals = torch.zeros((batch,), dtype=torch.float64, device=device)
+            done = torch.zeros((batch,), dtype=torch.bool, device=device)
             for _ in range(int(max_steps)):
-                obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
                 with torch.no_grad():
-                    action = actor.deterministic_action(obs_t).detach().cpu().numpy()
-                step = env.step_batch(action)
-                obs = np.asarray(step.observations, dtype=np.float32)
-                for i in range(active):
-                    if done[i]:
-                        continue
-                    diagnostics.record_step_info(step.infos[i])
-                    totals[i] += float(step.rewards[i])
-                    if bool(step.terminated[i]) or bool(step.truncated[i]):
-                        done[i] = True
-                if bool(np.all(done[:active])):
+                    action = actor.deterministic_action(obs)
+                step = env.step_batch_tensor(action)
+                _require_tensor_step(step, batch_env_count=batch)
+                obs = step.observations.to(device=device, dtype=torch.float32)
+                rewards_t = step.rewards.to(device=device, dtype=torch.float64)
+                terminated_t = step.terminated.to(device=device, dtype=torch.bool)
+                truncated_t = step.truncated.to(device=device, dtype=torch.bool)
+                step_done = terminated_t | truncated_t
+                participating = ~done[:active]
+                active_rewards = rewards_t[:active]
+                totals[:active] += torch.where(participating, active_rewards, torch.zeros_like(active_rewards))
+                ip_error_t = step.components.get("ip_error_norm", torch.zeros((batch,), dtype=torch.float32, device=device)).to(device=device)
+                shape_error_t = step.components.get("shape_error_norm", torch.zeros((batch,), dtype=torch.float32, device=device)).to(device=device)
+                boundary_found_t = step.boundary_found.to(device=device, dtype=torch.bool)
+                tracking_ip_error_sum += torch.sum(ip_error_t[:active][participating].to(dtype=torch.float64))
+                tracking_shape_error_sum += torch.sum(shape_error_t[:active][participating].to(dtype=torch.float64))
+                tracking_boundary_found_count += torch.count_nonzero(boundary_found_t[:active][participating])
+                tracking_count += torch.count_nonzero(participating)
+                done[:active] |= step_done[:active]
+                if bool(torch.all(done[:active]).detach().cpu()):
                     break
-            returns.extend(float(v) for v in totals[:active])
+            returns.extend(float(v) for v in totals[:active].detach().cpu().numpy())
             remaining -= active
     finally:
         actor.train(was_training)
-    return {"returns": returns, "tracking_diagnostics": diagnostics.summary()}
+    tracking = _tensor_tracking_summary(ip_error_sum=tracking_ip_error_sum, shape_error_sum=tracking_shape_error_sum, boundary_found_count=tracking_boundary_found_count, count=tracking_count, reset_diagnostics=diagnostics) if _scalar_int(tracking_count) > 0 else diagnostics.summary()
+    return {"returns": returns, "tracking_diagnostics": tracking}
 
 
 class _EpisodeBuilder:
@@ -1145,6 +1263,28 @@ class _EpisodeBuilder:
             "truncated": np.asarray(self.truncated, dtype=bool),
         }
 
+    def pop_prefix_arrays(self, length: int) -> dict[str, np.ndarray]:
+        count = int(length)
+        if count <= 0:
+            raise ValueError("cannot flush non-positive rollout chunk")
+        if count > self.length:
+            raise ValueError("rollout chunk length exceeds buffered transitions")
+        arrays = {
+            "observations": np.stack(self.observations[:count], axis=0),
+            "actions": np.stack(self.actions[:count], axis=0),
+            "rewards": np.asarray(self.rewards[:count], dtype=np.float32),
+            "next_observations": np.stack(self.next_observations[:count], axis=0),
+            "terminated": np.asarray(self.terminated[:count], dtype=bool),
+            "truncated": np.asarray(self.truncated[:count], dtype=bool),
+        }
+        del self.observations[:count]
+        del self.actions[:count]
+        del self.rewards[:count]
+        del self.next_observations[:count]
+        del self.terminated[:count]
+        del self.truncated[:count]
+        return arrays
+
     def clear(self) -> None:
         self.observations.clear()
         self.actions.clear()
@@ -1152,6 +1292,175 @@ class _EpisodeBuilder:
         self.next_observations.clear()
         self.terminated.clear()
         self.truncated.clear()
+
+
+class _TensorRolloutChunkBuffer:
+    def __init__(self, *, num_envs: int, chunk_length: int, obs_dim: int, action_dim: int, device: torch.device) -> None:
+        self.num_envs = int(num_envs)
+        self.chunk_length = int(chunk_length)
+        self.obs_dim = int(obs_dim)
+        self.action_dim = int(action_dim)
+        self.device = torch.device(device)
+        self.observations = torch.empty((self.num_envs, self.chunk_length, self.obs_dim), dtype=torch.float32, device=self.device)
+        self.actions = torch.empty((self.num_envs, self.chunk_length, self.action_dim), dtype=torch.float32, device=self.device)
+        self.rewards = torch.empty((self.num_envs, self.chunk_length), dtype=torch.float32, device=self.device)
+        self.next_observations = torch.empty((self.num_envs, self.chunk_length, self.obs_dim), dtype=torch.float32, device=self.device)
+        self.terminated = torch.empty((self.num_envs, self.chunk_length), dtype=torch.bool, device=self.device)
+        self.truncated = torch.empty((self.num_envs, self.chunk_length), dtype=torch.bool, device=self.device)
+        self.positions = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+        self.env_indices = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
+
+    def add_batch(self, observations: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, next_observations: torch.Tensor, terminated: torch.Tensor, truncated: torch.Tensor) -> None:
+        if tuple(observations.shape) != (self.num_envs, self.obs_dim):
+            raise ValueError("observation batch shape does not match rollout chunk buffer")
+        if tuple(actions.shape) != (self.num_envs, self.action_dim):
+            raise ValueError("action batch shape does not match rollout chunk buffer")
+        pos = self.positions
+        if bool(torch.any(pos >= self.chunk_length).detach().cpu()):
+            raise RuntimeError("rollout chunk buffer is full; flush ready chunks before adding more transitions")
+        self.observations[self.env_indices, pos] = observations.detach()
+        self.actions[self.env_indices, pos] = actions.detach()
+        self.rewards[self.env_indices, pos] = rewards.detach()
+        self.next_observations[self.env_indices, pos] = next_observations.detach()
+        self.terminated[self.env_indices, pos] = terminated.detach()
+        self.truncated[self.env_indices, pos] = truncated.detach()
+        self.positions += 1
+
+    def add_one(self, env_index: int, observation: torch.Tensor, action: torch.Tensor, reward: torch.Tensor, next_observation: torch.Tensor, terminated: torch.Tensor, truncated: torch.Tensor) -> None:
+        idx = int(env_index)
+        pos = int(self.positions[idx].detach().cpu())
+        if pos >= self.chunk_length:
+            raise RuntimeError("rollout chunk buffer is full; flush before adding more transitions")
+        self.observations[idx, pos] = observation.detach()
+        self.actions[idx, pos] = action.detach()
+        self.rewards[idx, pos] = reward.detach()
+        self.next_observations[idx, pos] = next_observation.detach()
+        self.terminated[idx, pos] = terminated.detach()
+        self.truncated[idx, pos] = truncated.detach()
+        self.positions[idx] = pos + 1
+
+    def should_flush(self, env_index: int) -> bool:
+        return int(self.positions[int(env_index)].detach().cpu()) >= self.chunk_length
+
+    def ready_indices(self) -> list[int]:
+        return _tensor_index_list(self.positions >= self.chunk_length)
+
+    def has_data(self, env_index: int) -> bool:
+        return int(self.positions[int(env_index)].detach().cpu()) > 0
+
+    def flush(self, env_index: int) -> dict[str, torch.Tensor]:
+        idx = int(env_index)
+        length = int(self.positions[idx].detach().cpu())
+        if length <= 0:
+            raise ValueError("cannot flush empty rollout chunk")
+        out = {
+            "observations": self.observations[idx, :length].clone(),
+            "actions": self.actions[idx, :length].clone(),
+            "rewards": self.rewards[idx, :length].clone(),
+            "next_observations": self.next_observations[idx, :length].clone(),
+            "terminated": self.terminated[idx, :length].clone(),
+            "truncated": self.truncated[idx, :length].clone(),
+        }
+        self.positions[idx] = 0
+        return out
+
+
+
+def _reason_from_code_int(code: int) -> str:
+    return {1: "boundary_not_found", 2: "invalid_reward", 3: "invalid_observation", 4: "max_episode_steps"}.get(int(code), "")
+
+
+def _require_tensor_step(step, *, batch_env_count: int) -> None:
+    for field_name in ("observations", "rewards", "terminated", "truncated", "reason_codes", "boundary_found"):
+        if not hasattr(step, field_name) or not torch.is_tensor(getattr(step, field_name)):
+            raise RuntimeError(f"true batched GPU step_batch_tensor must return tensor field '{field_name}'")
+    if not hasattr(step, "components") or not isinstance(step.components, dict):
+        raise RuntimeError("true batched GPU step_batch_tensor must return a components dict")
+    if int(step.rewards.shape[0]) != int(batch_env_count):
+        raise RuntimeError("true batched GPU step returned an unexpected batch size")
+
+
+def _tensor_index_list(mask: torch.Tensor) -> list[int]:
+    if mask.ndim != 1:
+        raise ValueError("mask must be one-dimensional")
+    return [int(value) for value in torch.nonzero(mask, as_tuple=False).flatten().detach().cpu().tolist()]
+
+
+def _tensor_bool_values(values: torch.Tensor, indices: list[int]) -> list[bool]:
+    if not indices:
+        return []
+    return [bool(value) for value in values[torch.as_tensor(indices, dtype=torch.long, device=values.device)].detach().cpu().numpy().astype(bool, copy=False).tolist()]
+
+
+def _tensor_int_values(values: torch.Tensor, indices: list[int]) -> list[int]:
+    if not indices:
+        return []
+    return [int(value) for value in values[torch.as_tensor(indices, dtype=torch.long, device=values.device)].detach().cpu().numpy().astype(int, copy=False).tolist()]
+
+
+def _tensor_float_values(values: torch.Tensor, indices: list[int]) -> list[float]:
+    if not indices:
+        return []
+    return [float(value) for value in values[torch.as_tensor(indices, dtype=torch.long, device=values.device)].detach().cpu().numpy().astype(float, copy=False).tolist()]
+
+
+def _scalar_float(value) -> float:
+    if torch.is_tensor(value):
+        return float(value.detach().cpu().item())
+    return float(value)
+
+
+def _scalar_int(value) -> int:
+    if torch.is_tensor(value):
+        return int(value.detach().cpu().item())
+    return int(value)
+
+
+def _episode_artifact_record_from_means(
+    *,
+    env_index: int,
+    episode: int,
+    episode_return: float,
+    episode_length: int,
+    terminated: bool,
+    truncated: bool,
+    termination_reason: str,
+    ip_error_sum: float,
+    shape_error_sum: float,
+    error_count: int,
+    boundary_failure_steps: int,
+    reset_record: dict[str, object],
+) -> dict[str, object]:
+    count = max(int(error_count), 1)
+    return {
+        "episode": int(episode),
+        "env_index": int(env_index),
+        "return": float(episode_return),
+        "length": int(episode_length),
+        "terminated": bool(terminated),
+        "truncated": bool(truncated),
+        "termination_reason": str(termination_reason),
+        "mean_ip_error_norm": float(ip_error_sum) / count,
+        "mean_shape_error_norm": float(shape_error_sum) / count,
+        "boundary_failure_steps": int(boundary_failure_steps),
+        "initial_state_mode": reset_record.get("initial_state_mode", ""),
+        "initial_state_shot": reset_record.get("initial_state_shot", ""),
+        "initial_ip": reset_record.get("initial_ip", float("nan")),
+        "reference_episode_seed": reset_record.get("reference_episode_seed", -1),
+        "reference_effective_seed": reset_record.get("reference_effective_seed", -1),
+        "reference_effective_ip_seed": reset_record.get("reference_effective_ip_seed", -1),
+        "randomization_seed": reset_record.get("randomization_seed", -1),
+    }
+
+
+def _tensor_tracking_summary(*, ip_error_sum, shape_error_sum, boundary_found_count, count, reset_diagnostics: TrainingDiagnostics) -> dict[str, object]:
+    base = reset_diagnostics.summary()
+    count_value = _scalar_int(count)
+    if count_value > 0:
+        base["mean_ip_error_norm"] = _scalar_float(ip_error_sum) / count_value
+        base["mean_shape_error_norm"] = _scalar_float(shape_error_sum) / count_value
+        base["boundary_failure_rate"] = 1.0 - (_scalar_int(boundary_found_count) / count_value)
+    return base
 
 
 def _select_training_action(
@@ -1170,6 +1479,29 @@ def _select_training_action(
     with torch.no_grad():
         action, _mean, _std = actor.sample_action(obs_t, generator=torch_generator if device.type == "cpu" else None)
     return action.detach().cpu().numpy()[0].astype(np.float32, copy=False)
+
+
+def _select_training_actions_tensor(
+    actor: FeedForwardActor,
+    observations: torch.Tensor,
+    *,
+    action_dim: int,
+    warmup_count: int,
+    torch_generator: torch.Generator,
+    device: torch.device,
+) -> torch.Tensor:
+    obs = observations.to(device=device, dtype=torch.float32, non_blocking=True)
+    if obs.ndim != 2:
+        raise ValueError("observations must have shape (batch, obs_dim)")
+    warm_count = min(max(int(warmup_count), 0), int(obs.shape[0]))
+    actions = torch.empty((obs.shape[0], int(action_dim)), dtype=torch.float32, device=device)
+    if warm_count < int(obs.shape[0]):
+        with torch.no_grad():
+            sampled, _mean, _std = actor.sample_action(obs[warm_count:], generator=torch_generator if device.type == "cpu" else None)
+        actions[warm_count:] = sampled
+    if warm_count > 0:
+        actions[:warm_count].uniform_(-1.0, 1.0)
+    return torch.clamp(actions, -1.0, 1.0)
 
 
 def _select_training_actions_batch(
@@ -1650,7 +1982,10 @@ def _throughput_metrics(
     evaluation_time_s: float,
 ) -> dict[str, object]:
     elapsed = max(float(total_elapsed_s), 1.0e-12)
+    collection = max(float(collection_time_s), 1.0e-12)
+    env_step = max(float(env_step_time_s), 1.0e-12)
     learner = max(float(learner_time_s), 1.0e-12)
+    overall_steps_per_second = float(total_steps) / elapsed
     return {
         "total_elapsed_s": float(total_elapsed_s),
         "collection_time_s": float(collection_time_s),
@@ -1659,7 +1994,10 @@ def _throughput_metrics(
         "replay_sampling_time_s": float(replay_sampling_time_s),
         "learner_time_s": float(learner_time_s),
         "evaluation_time_s": float(evaluation_time_s),
-        "env_steps_per_second": float(total_steps) / elapsed,
+        "env_steps_per_second": overall_steps_per_second,
+        "overall_steps_per_second": overall_steps_per_second,
+        "collection_steps_per_second": float(total_steps) / collection,
+        "env_step_only_steps_per_second": float(total_steps) / env_step,
         "learner_updates_per_second": float(update_count) / learner if int(update_count) > 0 else 0.0,
         "update_to_data_ratio": float(update_count) / max(float(total_steps), 1.0),
     }

@@ -76,12 +76,12 @@ def recurrent_critic_update_once(
     if mpo_kl_opt is not None and (log_mpo_mean_kl_penalty is None or log_mpo_std_kl_penalty is None):
         raise ValueError("MPO KL penalty tensors are required when mpo_kl_opt is set")
     device = torch.device(device)
-    obs = torch.as_tensor(batch.observations, dtype=torch.float32, device=device)
-    actions = torch.as_tensor(batch.actions, dtype=torch.float32, device=device)
-    rewards = torch.as_tensor(batch.rewards, dtype=torch.float32, device=device)
-    next_obs = torch.as_tensor(batch.next_observations, dtype=torch.float32, device=device)
-    terminated = torch.as_tensor(batch.terminated.astype(np.float32), dtype=torch.float32, device=device)
-    mask = torch.as_tensor(batch.mask.astype(np.float32), dtype=torch.float32, device=device)
+    obs = _batch_tensor(batch.observations, dtype=torch.float32, device=device)
+    actions = _batch_tensor(batch.actions, dtype=torch.float32, device=device)
+    rewards = _batch_tensor(batch.rewards, dtype=torch.float32, device=device)
+    next_obs = _batch_tensor(batch.next_observations, dtype=torch.float32, device=device)
+    terminated = _batch_tensor(batch.terminated, dtype=torch.float32, device=device)
+    mask = _batch_tensor(batch.mask, dtype=torch.float32, device=device)
     valid_steps = int(torch.sum(mask).detach().cpu().item())
     if valid_steps <= 0:
         raise ValueError("sequence batch mask has no valid timesteps")
@@ -178,6 +178,12 @@ def recurrent_critic_update_once(
         mpo_mean_kl_penalty=mean_kl_penalty_value,
         mpo_std_kl_penalty=std_kl_penalty_value,
     )
+
+
+def _batch_tensor(value, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    if torch.is_tensor(value):
+        return value.to(device=device, dtype=dtype, non_blocking=True)
+    return torch.as_tensor(value, dtype=dtype, device=device)
 
 
 def _actor_actions_for_sequence(actor: FeedForwardActor, observations: torch.Tensor) -> torch.Tensor:

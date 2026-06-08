@@ -176,6 +176,26 @@ def test_load_experiment_config_rejects_unknown_top_level_fields(tmp_path: Path)
         load_experiment_config(path)
 
 
+
+def test_training_config_parses_rollout_chunk_cadence(tmp_path: Path) -> None:
+    sim_config = REPO_ROOT.parent / "tokamak-sim/configs/T15MD_new_data.toml"
+    path = tmp_path / "chunked_training.yaml"
+    path.write_text(
+        f"name: chunked_training\n"
+        f"sim:\n"
+        f"  config_path: {sim_config}\n"
+        f"training:\n"
+        f"  rollout_chunk_length: 32\n"
+        f"  updates_per_rollout_chunk: 4\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_experiment_config(path)
+
+    assert cfg.training.rollout_chunk_length == 32
+    assert cfg.training.updates_per_rollout_chunk == 4
+
+
 def test_training_config_rejects_unknown_fields(tmp_path: Path) -> None:
     sim_config = REPO_ROOT.parent / "tokamak-sim/configs/T15MD_new_data.toml"
     path = tmp_path / "bad_training.yaml"

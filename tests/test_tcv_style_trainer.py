@@ -2,12 +2,120 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 
 from tests.test_simple_trainer import ToyContinuousEnv
 from tokamak_rl.training import TCVStyleTrainerConfig, evaluate_tcv_actor, evaluate_tcv_actor_detailed, train_tcv_style_actor_critic
+
+
+class ToyBatchedResult:
+    def __init__(self, observations, rewards=None, terminated=None, truncated=None, infos=None):
+        self.observations = observations
+        self.rewards = rewards
+        self.terminated = terminated
+        self.truncated = truncated
+        self.infos = infos or []
+
+
+class ToyTrueBatchedEnv:
+    obs_dim = 4
+    action_dim = 2
+    num_envs = 2
+
+    def __init__(self, *, max_steps: int = 100) -> None:
+        self.max_steps = int(max_steps)
+        self.state = np.zeros((self.num_envs, self.obs_dim), dtype=np.float32)
+        self.steps = np.zeros((self.num_envs,), dtype=np.int32)
+
+    def reset_batch(self, seeds):
+        seeds = np.asarray(seeds, dtype=int).reshape(-1)
+        self.num_envs = int(seeds.shape[0])
+        self.state = np.zeros((self.num_envs, self.obs_dim), dtype=np.float32)
+        self.steps = np.zeros((self.num_envs,), dtype=np.int32)
+        for i, seed in enumerate(seeds):
+            rng = np.random.default_rng(int(seed))
+            self.state[i] = rng.normal(0.0, 0.05, size=(self.obs_dim,)).astype(np.float32)
+        return ToyBatchedResult(self.state.copy(), infos=[self._reset_info(seed) for seed in seeds])
+
+    def reset_batch_tensor(self, seeds):
+        result = self.reset_batch(seeds)
+        return ToyBatchedResult(torch.as_tensor(result.observations, dtype=torch.float32), infos=result.infos)
+
+    def reset_indices(self, indices, seeds):
+        observations = []
+        infos = []
+        for index, seed in zip(indices, seeds, strict=True):
+            rng = np.random.default_rng(int(seed))
+            self.state[int(index)] = rng.normal(0.0, 0.05, size=(self.obs_dim,)).astype(np.float32)
+            self.steps[int(index)] = 0
+            observations.append(self.state[int(index)].copy())
+            infos.append(self._reset_info(seed))
+        return np.stack(observations, axis=0), infos
+
+    def reset_indices_tensor(self, indices, seeds):
+        observations, infos = self.reset_indices(indices, seeds)
+        return torch.as_tensor(observations, dtype=torch.float32), infos
+
+    def step_batch(self, actions):
+        actions = np.asarray(actions, dtype=np.float32).reshape(self.num_envs, self.action_dim)
+        self.steps += 1
+        self.state[:, :2] = 0.85 * self.state[:, :2] + 0.15 * actions
+        self.state[:, 2:] = actions
+        rewards = -(np.mean(self.state[:, :2] ** 2, axis=1) + 0.01 * np.mean(actions**2, axis=1)).astype(np.float32)
+        terminated = np.zeros((self.num_envs,), dtype=bool)
+        truncated = self.steps >= self.max_steps
+        infos = []
+        for i in range(self.num_envs):
+            infos.append({
+                "reward_components": {
+                    "ip_error_norm": float(abs(self.state[i, 0])),
+                    "shape_error_norm": float(abs(self.state[i, 1])),
+                },
+                "snapshot": SimpleNamespace(boundary_found=True),
+            })
+        return ToyBatchedResult(self.state.copy(), rewards=rewards, terminated=terminated, truncated=truncated, infos=infos)
+
+    def step_batch_tensor(self, actions):
+        actions_np = actions.detach().cpu().numpy() if torch.is_tensor(actions) else np.asarray(actions, dtype=np.float32)
+        result = self.step_batch(actions_np)
+        ip_error = torch.as_tensor([info["reward_components"]["ip_error_norm"] for info in result.infos], dtype=torch.float32)
+        shape_error = torch.as_tensor([info["reward_components"]["shape_error_norm"] for info in result.infos], dtype=torch.float32)
+        truncated = torch.as_tensor(result.truncated, dtype=torch.bool)
+        reason_codes = torch.where(truncated, torch.full((self.num_envs,), 4, dtype=torch.int64), torch.zeros((self.num_envs,), dtype=torch.int64))
+        return SimpleNamespace(
+            observations=torch.as_tensor(result.observations, dtype=torch.float32),
+            rewards=torch.as_tensor(result.rewards, dtype=torch.float32),
+            terminated=torch.as_tensor(result.terminated, dtype=torch.bool),
+            truncated=truncated,
+            components={"ip_error_norm": ip_error, "shape_error_norm": shape_error},
+            reason_codes=reason_codes,
+            boundary_found=torch.ones((self.num_envs,), dtype=torch.bool),
+        )
+
+    def close(self):
+        return None
+
+    @staticmethod
+    def _reset_info(seed):
+        seed = int(seed)
+        return {
+            "seed": seed,
+            "episode_metadata": {
+                "reference_effective_seed": seed + 100,
+                "reference_effective_ip_seed": seed + 200,
+            },
+        }
+
+
+class ToyTrueBatchedFactory:
+    is_true_batched_gpu_factory = True
+
+    def __call__(self):
+        return ToyTrueBatchedEnv(max_steps=100)
 
 
 def test_tcv_style_recurrent_trainer_smoke_logs_and_checkpoint(tmp_path: Path) -> None:
@@ -195,6 +303,77 @@ def test_tcv_style_update_cadence_respects_catchup_cap(tmp_path: Path) -> None:
     assert metrics["throughput"]["update_to_data_ratio"] == pytest.approx(len(result.critic_losses) / result.total_steps)
 
 
+def test_true_batched_trainer_learns_from_rollout_chunks_before_episode_end(tmp_path: Path) -> None:
+    cfg = TCVStyleTrainerConfig(
+        total_steps=32,
+        warmup_steps=4,
+        batch_size=2,
+        sequence_length=4,
+        rollout_chunk_length=4,
+        updates_per_rollout_chunk=1,
+        updates_per_episode=99,
+        updates_per_env_step=0,
+        actor_hidden_dim=16,
+        critic_hidden_dim=16,
+        critic_mlp_hidden_dim=16,
+        mpo_action_samples=4,
+        mpo_temperature_iterations=3,
+        num_envs=2,
+        eval_interval_steps=16,
+        eval_episodes=1,
+        eval_max_steps=4,
+        seed=41,
+        device="cpu",
+        output_dir=tmp_path,
+        checkpoint_dir=tmp_path,
+        checkpoint_interval_steps=16,
+        max_step_checkpoints=2,
+        run_metadata={"experiment_name": "toy_true_batched_chunks"},
+    )
+
+    result = train_tcv_style_actor_critic(ToyTrueBatchedFactory(), cfg, eval_env_factory=ToyTrueBatchedFactory())
+
+    metrics = json.loads(result.metrics_json.read_text(encoding="utf-8"))
+    assert result.total_steps == 32
+    assert result.replay_transitions == 32
+    assert result.replay_episodes == 8
+    assert len(result.critic_losses) == 8
+    assert len(result.actor_losses) == 4
+    assert len(metrics["eval_history"]) == 2
+    assert metrics["config"]["rollout_chunk_length"] == 4
+    assert metrics["config"]["updates_per_rollout_chunk"] == 1
+    assert metrics["throughput"]["update_to_data_ratio"] == pytest.approx(8 / 32)
+    assert (tmp_path / "step_00000016.pt").exists()
+    assert (tmp_path / "step_00000032.pt").exists()
+    assert result.latest_checkpoint_path is not None and result.latest_checkpoint_path.exists()
+    assert result.best_checkpoint_path is not None and result.best_checkpoint_path.exists()
+
+
+def test_true_batched_trainer_rejects_partial_batch_steps(tmp_path: Path) -> None:
+    cfg = TCVStyleTrainerConfig(
+        total_steps=31,
+        warmup_steps=4,
+        batch_size=2,
+        sequence_length=4,
+        rollout_chunk_length=4,
+        updates_per_rollout_chunk=1,
+        actor_hidden_dim=16,
+        critic_hidden_dim=16,
+        critic_mlp_hidden_dim=16,
+        mpo_action_samples=4,
+        mpo_temperature_iterations=3,
+        num_envs=2,
+        eval_episodes=1,
+        eval_max_steps=4,
+        seed=43,
+        device="cpu",
+        output_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="divisible by num_envs"):
+        train_tcv_style_actor_critic(ToyTrueBatchedFactory(), cfg, eval_env_factory=ToyTrueBatchedFactory())
+
+
 def test_tcv_style_config_validation() -> None:
     with pytest.raises(ValueError, match="sequence_length"):
         TCVStyleTrainerConfig(sequence_length=0)
@@ -208,6 +387,10 @@ def test_tcv_style_config_validation() -> None:
         TCVStyleTrainerConfig(updates_per_env_step=-1)
     with pytest.raises(ValueError, match="max_learner_catchup_updates"):
         TCVStyleTrainerConfig(max_learner_catchup_updates=0)
+    with pytest.raises(ValueError, match="rollout_chunk_length"):
+        TCVStyleTrainerConfig(rollout_chunk_length=0)
+    with pytest.raises(ValueError, match="updates_per_rollout_chunk"):
+        TCVStyleTrainerConfig(updates_per_rollout_chunk=0)
     with pytest.raises(ValueError, match="max_step_checkpoints"):
         TCVStyleTrainerConfig(max_step_checkpoints=0)
 

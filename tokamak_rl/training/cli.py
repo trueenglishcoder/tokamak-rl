@@ -48,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--num-envs", type=int, default=None, help="Number of synchronous training environments.")
     parser.add_argument("--updates-per-episode", type=int, default=None, help="TCV-style sequence updates after each completed episode.")
     parser.add_argument("--updates-per-env-step", type=int, default=None, help="TCV-style sequence updates after each collected environment step when replay is nonempty.")
+    parser.add_argument("--rollout-chunk-length", type=int, default=None, help="True-batched GPU rollout chunk length before replay insertion; defaults to sequence length.")
+    parser.add_argument("--updates-per-rollout-chunk", type=int, default=None, help="True-batched GPU learner updates per flushed rollout chunk; defaults to updates per episode.")
     parser.add_argument("--max-learner-catchup-updates", type=int, default=None, help="Optional cap on learner updates run by a single update trigger.")
     parser.add_argument("--eval-interval-steps", type=int, default=None, help="Optional periodic deterministic eval interval.")
     parser.add_argument("--eval-episodes", type=int, default=None, help="Deterministic eval episodes after training.")
@@ -152,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
             num_envs=requested_num_envs,
             updates_per_episode=args.updates_per_episode if args.updates_per_episode is not None else experiment.training.updates_per_episode,
             updates_per_env_step=args.updates_per_env_step if args.updates_per_env_step is not None else experiment.training.updates_per_env_step,
+            rollout_chunk_length=args.rollout_chunk_length if args.rollout_chunk_length is not None else experiment.training.rollout_chunk_length,
+            updates_per_rollout_chunk=args.updates_per_rollout_chunk if args.updates_per_rollout_chunk is not None else experiment.training.updates_per_rollout_chunk,
             max_learner_catchup_updates=args.max_learner_catchup_updates if args.max_learner_catchup_updates is not None else experiment.training.max_learner_catchup_updates,
             eval_interval_steps=args.eval_interval_steps,
             output_dir=output_dir,

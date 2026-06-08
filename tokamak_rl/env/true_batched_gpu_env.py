@@ -23,12 +23,29 @@ class BatchedGpuReset:
 
 
 @dataclass(slots=True)
+class BatchedGpuTensorReset:
+    observations: torch.Tensor
+    infos: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
 class BatchedGpuStep:
     observations: np.ndarray
     rewards: np.ndarray
     terminated: np.ndarray
     truncated: np.ndarray
     infos: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class BatchedGpuTensorStep:
+    observations: torch.Tensor
+    rewards: torch.Tensor
+    terminated: torch.Tensor
+    truncated: torch.Tensor
+    components: dict[str, torch.Tensor]
+    reason_codes: torch.Tensor
+    boundary_found: torch.Tensor
 
 
 class TrueBatchedGpuTokamakEnv:
@@ -57,6 +74,7 @@ class TrueBatchedGpuTokamakEnv:
         self._initial_metadata: list[dict[str, object]] = [{} for _ in range(self.num_envs)]
         self._reference_metadata: list[dict[str, object]] = [{} for _ in range(self.num_envs)]
         self._reference_args: list[dict[str, object]] = [dict(self.cfg.scenario_args) for _ in range(self.num_envs)]
+        self._last_step_result: Any | None = None
 
     @property
     def obs_dim(self) -> int:
@@ -67,6 +85,10 @@ class TrueBatchedGpuTokamakEnv:
         return self.n_active_total
 
     def reset_batch(self, seeds: np.ndarray | list[int]) -> BatchedGpuReset:
+        reset = self.reset_batch_tensor(seeds)
+        return BatchedGpuReset(observations=self._cpu(reset.observations).astype(np.float32, copy=False), infos=reset.infos)
+
+    def reset_batch_tensor(self, seeds: np.ndarray | list[int]) -> BatchedGpuTensorReset:
         seeds_arr = np.asarray(seeds, dtype=int).reshape(-1)
         if seeds_arr.shape != (self.num_envs,):
             raise ValueError(f"seeds must have shape ({self.num_envs},)")
@@ -96,13 +118,17 @@ class TrueBatchedGpuTokamakEnv:
         self._build_references(reference_args, initial_ip)
         obs_t = self._build_observations(reset_result.boundary)
         infos = [self._reset_info(i, reset_result.boundary) for i in range(self.num_envs)]
-        return BatchedGpuReset(observations=self._cpu(obs_t).astype(np.float32, copy=False), infos=infos)
+        return BatchedGpuTensorReset(observations=obs_t, infos=infos)
 
     def reset_indices(self, indices: list[int], seeds: list[int]) -> tuple[np.ndarray, list[dict[str, Any]]]:
+        obs_t, infos = self.reset_indices_tensor(indices, seeds)
+        return self._cpu(obs_t).astype(np.float32, copy=False), infos
+
+    def reset_indices_tensor(self, indices: list[int], seeds: list[int]) -> tuple[torch.Tensor, list[dict[str, Any]]]:
         if len(indices) != len(seeds):
             raise ValueError("indices and seeds must have the same length")
         if not indices:
-            return np.zeros((0, self.obs_dim), dtype=np.float32), []
+            return torch.zeros((0, self.obs_dim), dtype=torch.float32, device=self.device), []
         ref_args_all = [dict(args) for args in self._reference_args]
         reset_ip = np.zeros((len(indices),), dtype=float)
         reset_pfc = np.zeros((len(indices), self.n_pfc), dtype=float)
@@ -119,35 +145,48 @@ class TrueBatchedGpuTokamakEnv:
             ref_args_all[int(idx)] = args
             self._reference_args[int(idx)] = dict(args)
         reset_result = self.sim.reset_indices(indices, ip=reset_ip, pfc_currents=reset_pfc, sol_currents=reset_sol)
-        initial_ip_all = self._cpu(self.sim.state.ip)
-        self._build_references(ref_args_all, initial_ip_all)
+        self._update_references(indices, [ref_args_all[int(index)] for index in indices], reset_ip)
         self.previous_action_norm[indices] = 0.0
         self.measured_boundary_missing[indices] = 0
         self.terminated_flags[indices] = False
         obs_t = self._build_observations(reset_result.boundary)
         infos = [self._reset_info(int(i), reset_result.boundary) for i in indices]
-        return self._cpu(obs_t[indices]).astype(np.float32, copy=False), infos
+        return obs_t[indices], infos
 
     def step_batch(self, actions: np.ndarray) -> BatchedGpuStep:
-        action_norm = torch.as_tensor(np.asarray(actions, dtype=np.float32), dtype=torch.float64, device=self.device).reshape(self.num_envs, self.n_active_total)
+        step = self.step_batch_tensor(actions)
+        result = self._last_step_result
+        infos = [self._step_info(i, result, step.components, step.reason_codes) for i in range(self.num_envs)]
+        return BatchedGpuStep(
+            observations=self._cpu(step.observations).astype(np.float32, copy=False),
+            rewards=self._cpu(step.rewards).astype(float, copy=False),
+            terminated=self._cpu(step.terminated).astype(bool, copy=False),
+            truncated=self._cpu(step.truncated).astype(bool, copy=False),
+            infos=infos,
+        )
+
+    def step_batch_tensor(self, actions) -> BatchedGpuTensorStep:
+        action_norm = torch.as_tensor(actions, dtype=torch.float64, device=self.device).reshape(self.num_envs, self.n_active_total)
         action_norm = torch.clamp(action_norm, -1.0, 1.0)
         physical = action_norm * self.derivative_scale_t[None, :]
         previous_action = self.previous_action_norm.clone()
         result = self.sim.step(physical)
+        self._last_step_result = result
         step = result.state.step.long()
-        ref_ip, ref_radii, ref_points = self._reference_at_steps(step)
+        ref_ip, _ref_radii, ref_points = self._reference_at_steps(step)
         reward, components = self._reward_tensor(result, ref_ip=ref_ip, ref_points=ref_points, action_norm=action_norm, previous_action=previous_action)
         self.previous_action_norm = action_norm
         obs_t = self._build_observations(result.boundary)
-        reward, terminated, truncated, reasons = self._termination(result, reward=reward, obs=obs_t)
+        reward, terminated, truncated, reason_codes = self._termination(result, reward=reward, obs=obs_t)
         self.terminated_flags |= terminated
-        infos = [self._step_info(i, result, components, reasons) for i in range(self.num_envs)]
-        return BatchedGpuStep(
-            observations=self._cpu(obs_t).astype(np.float32, copy=False),
-            rewards=self._cpu(reward).astype(float, copy=False),
-            terminated=self._cpu(terminated).astype(bool, copy=False),
-            truncated=self._cpu(truncated).astype(bool, copy=False),
-            infos=infos,
+        return BatchedGpuTensorStep(
+            observations=obs_t,
+            rewards=reward.to(dtype=torch.float32),
+            terminated=terminated,
+            truncated=truncated,
+            components={name: value.detach() for name, value in components.items()},
+            reason_codes=reason_codes,
+            boundary_found=result.boundary.found,
         )
 
     def close(self) -> None:
@@ -240,21 +279,35 @@ class TrueBatchedGpuTokamakEnv:
         return args, {"reference_resampling_enabled": True, "reference_base_seed": base_shape_seed, "reference_base_ip_seed": base_ip_seed, "reference_episode_seed": episode_seed, "reference_effective_seed": shape_seed, "reference_effective_ip_seed": ip_seed, "boundary_static_from_initial_state": static_boundary_from_initial}
 
     def _build_references(self, args_by_env: list[dict[str, object]], initial_ip: np.ndarray) -> None:
-        from tokamak_control.config.scenarios import make_scenario
-
-        horizon = int(self.cfg.max_episode_steps) + int(self.cfg.target_preview_steps) * int(self.cfg.target_preview_stride) + 2
-        times = np.arange(horizon, dtype=float) * float(self.loaded_cfg.physics.t_step)
-        ip = np.zeros((self.num_envs, horizon), dtype=float)
-        radii = np.zeros((self.num_envs, horizon, int(self.cfg.angles)), dtype=float)
-        for env_index, args in enumerate(args_by_env):
-            scenario = make_scenario(self.cfg.scenario_name, np.ones((int(self.cfg.angles),), dtype=float), float(initial_ip[env_index]), params=args, center=self.center)
-            for step, t in enumerate(times):
-                ip[env_index, step] = float(scenario.Ip_ref(float(t)))
-                radii[env_index, step] = np.asarray(scenario.ref_radii(self.angles_rad, float(t)), dtype=float).reshape(-1)
+        ip, radii = self._reference_arrays(args_by_env, np.asarray(initial_ip, dtype=float).reshape(-1))
         self.ip_ref = torch.as_tensor(ip, dtype=torch.float64, device=self.device)
         self.radii_ref = torch.as_tensor(radii, dtype=torch.float64, device=self.device)
         center = torch.tensor(self.center, dtype=torch.float64, device=self.device)
         self.points_ref = center[None, None, None, :] + self.radii_ref[:, :, :, None] * self.dir_t[None, None, :, :]
+
+    def _update_references(self, indices: list[int], args_by_env: list[dict[str, object]], initial_ip: np.ndarray) -> None:
+        ip, radii = self._reference_arrays(args_by_env, np.asarray(initial_ip, dtype=float).reshape(-1))
+        idx_t = torch.as_tensor(indices, dtype=torch.long, device=self.device)
+        self.ip_ref[idx_t] = torch.as_tensor(ip, dtype=torch.float64, device=self.device)
+        self.radii_ref[idx_t] = torch.as_tensor(radii, dtype=torch.float64, device=self.device)
+        center = torch.tensor(self.center, dtype=torch.float64, device=self.device)
+        self.points_ref[idx_t] = center[None, None, :] + self.radii_ref[idx_t, :, :, None] * self.dir_t[None, :, :]
+
+    def _reference_arrays(self, args_by_env: list[dict[str, object]], initial_ip: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        from tokamak_control.config.scenarios import make_scenario
+
+        horizon = int(self.cfg.max_episode_steps) + int(self.cfg.target_preview_steps) * int(self.cfg.target_preview_stride) + 2
+        times = np.arange(horizon, dtype=float) * float(self.loaded_cfg.physics.t_step)
+        env_count = len(args_by_env)
+        ip = np.zeros((env_count, horizon), dtype=float)
+        radii = np.zeros((env_count, horizon, int(self.cfg.angles)), dtype=float)
+        base_radii = np.ones((int(self.cfg.angles),), dtype=float)
+        for env_index, args in enumerate(args_by_env):
+            scenario = make_scenario(self.cfg.scenario_name, base_radii, float(initial_ip[env_index]), params=args, center=self.center)
+            for step, t in enumerate(times):
+                ip[env_index, step] = float(scenario.Ip_ref(float(t)))
+                radii[env_index, step] = np.asarray(scenario.ref_radii(self.angles_rad, float(t)), dtype=float).reshape(-1)
+        return ip, radii
 
     def _reference_at_steps(self, steps):
         idx = torch.clamp(steps.long(), 0, self.ip_ref.shape[1] - 1)
@@ -334,24 +387,19 @@ class TrueBatchedGpuTokamakEnv:
         self.measured_boundary_missing = torch.where(boundary.found, torch.zeros_like(self.measured_boundary_missing), self.measured_boundary_missing + 1)
         grace = step <= int(cfg.boundary_loss_grace_steps)
         terminated = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
-        reasons = [None for _ in range(self.num_envs)]
         boundary_loss = (~boundary.found) & bool(cfg.terminate_on_boundary_loss) & (~grace)
         terminated |= boundary_loss
         nonfinite_reward = (~torch.isfinite(reward)) & bool(cfg.terminate_on_nonfinite_reward)
         nonfinite_obs = (~torch.all(torch.isfinite(obs), dim=1)) & bool(cfg.terminate_on_nonfinite_observation)
         terminated |= nonfinite_reward | nonfinite_obs
         truncated = step >= int(self.cfg.max_episode_steps)
-        for i in range(self.num_envs):
-            if bool(boundary_loss[i].detach().cpu()):
-                reasons[i] = "boundary_not_found"
-            elif bool(nonfinite_reward[i].detach().cpu()):
-                reasons[i] = "invalid_reward"
-            elif bool(nonfinite_obs[i].detach().cpu()):
-                reasons[i] = "invalid_observation"
-            elif bool(truncated[i].detach().cpu()):
-                reasons[i] = "max_episode_steps"
+        reason_codes = torch.zeros((self.num_envs,), dtype=torch.int64, device=self.device)
+        reason_codes = torch.where(boundary_loss, torch.full_like(reason_codes, 1), reason_codes)
+        reason_codes = torch.where((reason_codes == 0) & nonfinite_reward, torch.full_like(reason_codes, 2), reason_codes)
+        reason_codes = torch.where((reason_codes == 0) & nonfinite_obs, torch.full_like(reason_codes, 3), reason_codes)
+        reason_codes = torch.where((reason_codes == 0) & truncated, torch.full_like(reason_codes, 4), reason_codes)
         reward = torch.where(terminated, reward - float(self.reward_fn.termination_penalty), reward)
-        return reward, terminated, truncated, reasons
+        return reward, terminated, truncated, reason_codes
 
     def _reset_info(self, index: int, boundary) -> dict[str, Any]:
         return {
@@ -360,13 +408,14 @@ class TrueBatchedGpuTokamakEnv:
             "episode_metadata": self._episode_metadata(index),
         }
 
-    def _step_info(self, index: int, result, components: dict[str, torch.Tensor], reasons: list[str | None]) -> dict[str, Any]:
+    def _step_info(self, index: int, result, components: dict[str, torch.Tensor], reason_codes) -> dict[str, Any]:
         comp = {name: float(values[index].detach().cpu()) for name, values in components.items()}
+        reason = _reason_from_code(int(reason_codes[index].detach().cpu()))
         return {
             "snapshot": self._snapshot(index, result.boundary),
             "reward_components": comp,
-            "termination_reason": reasons[index],
-            "termination_detail": reasons[index],
+            "termination_reason": reason,
+            "termination_detail": reason,
             "action_norm": self._cpu(self.previous_action_norm[index]),
         }
 
@@ -469,6 +518,11 @@ class TrueBatchedGpuEnvFactory:
         if self.env is None:
             self.env = TrueBatchedGpuTokamakEnv(self.env_config, num_envs=self.num_envs, reward_fn=self.reward_fn, randomizer=self.randomizer)
         return self.env
+
+
+
+def _reason_from_code(code: int) -> str | None:
+    return {1: "boundary_not_found", 2: "invalid_reward", 3: "invalid_observation", 4: "max_episode_steps"}.get(int(code))
 
 
 def _limit_vector(limit: float | None, size: int) -> np.ndarray:
