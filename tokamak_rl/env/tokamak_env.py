@@ -38,6 +38,7 @@ class TokamakRLEnv:
         self._terminated = False
         self._termination_reason: str | None = None
         self._measured_boundary_missing_count = 0
+        self._reference_preview_cache: dict[int, object] = {}
         self._configure_simulator_profiling()
 
     def _configure_simulator_profiling(self) -> None:
@@ -97,6 +98,7 @@ class TokamakRLEnv:
         self._terminated = False
         self._termination_reason = None
         self._measured_boundary_missing_count = 0
+        self._reference_preview_cache.clear()
         episode_metadata = {
             **dict(reset.episode_metadata),
             **reference_metadata,
@@ -353,7 +355,15 @@ class TokamakRLEnv:
         stride = int(self.cfg.target_preview_stride)
         step_offsets = np.arange(1, preview_steps + 1, dtype=float) * float(stride)
         times = float(snapshot.time_s) + step_offsets * float(self.machine.t_step)
-        frames = [self.session.reference_at_time(float(t)) for t in times]
+        t_step = float(self.machine.t_step)
+        frames = []
+        for t in times:
+            key = int(round(float(t) / t_step)) if t_step > 0.0 else hash(round(float(t), 15))
+            frame = self._reference_preview_cache.get(key)
+            if frame is None:
+                frame = self.session.reference_at_time(float(t))
+                self._reference_preview_cache[key] = frame
+            frames.append(frame)
         return {
             "time_norm": step_offsets / max(float(self.cfg.max_episode_steps), 1.0),
             "ip_ref": np.asarray([frame.ip_ref for frame in frames], dtype=float),

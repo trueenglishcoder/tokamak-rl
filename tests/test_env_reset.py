@@ -543,6 +543,13 @@ def test_tokamak_env_v2_observation_includes_future_target_preview(tmp_path: Pat
     assert np.all(np.isfinite(preview_radii))
     assert info["episode_metadata"]["training_contract"]["observation_schema"]["schema_version"] == "v2"
     assert info["episode_metadata"]["training_contract"]["target_preview"] == {"steps": 3, "stride": 2}
+
+    def fail_reference_lookup(_time_s):
+        raise AssertionError("preview frame should have been served from cache")
+
+    env.session.reference_at_time = fail_reference_lookup
+    cached_preview = env._reference_preview(info["snapshot"])
+    assert np.all(np.isfinite(cached_preview["radii_ref"]))
     env.close()
 
 
