@@ -68,6 +68,8 @@ class TokamakRLEnv:
                 pfc_currents=initial_pfc_currents,
                 sol_currents=initial_sol_currents,
             ),
+            compute_backend=self.cfg.compute_backend,
+            gpu_device=self.cfg.gpu_device,
         )
         reset = self.session.reset(seed=seed, realism_settings=randomization_sample.realism_settings)
         self._reset_count += 1

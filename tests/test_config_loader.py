@@ -56,6 +56,24 @@ def test_load_randomization_config_parses_simulator_noise(tmp_path: Path) -> Non
     assert cfg.randomization.actuators.pfc_command_noise_sigma == pytest.approx(3.0)
 
 
+def test_load_experiment_config_parses_sim_compute_backend(tmp_path: Path) -> None:
+    sim_config = REPO_ROOT.parent / "tokamak-sim/configs/T15MD_new_data.toml"
+    experiment = tmp_path / "experiment.yaml"
+    experiment.write_text(
+        f"name: sim_gpu_backend\n"
+        f"sim:\n"
+        f"  config_path: {sim_config}\n"
+        f"  compute_backend: gpu\n"
+        f"  gpu_device: cuda:0\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_experiment_config(experiment)
+
+    assert cfg.env.compute_backend == "gpu"
+    assert cfg.env.gpu_device == "cuda:0"
+
+
 def test_randomization_config_rejects_unknown_fields(tmp_path: Path) -> None:
     sim_config = REPO_ROOT.parent / "tokamak-sim/configs/T15MD_new_data.toml"
     randomization_config = tmp_path / "randomization.yaml"

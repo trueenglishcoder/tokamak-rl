@@ -127,8 +127,12 @@ On a server with the NVIDIA container runtime available, use the GPU-profile ser
 docker compose --profile gpu run --rm tokamak-rl-gpu \
   python scripts/train.py \
     --config configs/experiments/t15md_training_real_replay_like.yaml \
-    --device cuda
+    --device cuda \
+    --sim-compute-backend gpu \
+    --sim-gpu-device cuda:0
 ```
+
+`--device cuda` controls the learner networks. `--sim-compute-backend gpu` separately tells `tokamak-sim` to use its CUDA boundary-finding backend while stepping environments. If omitted, the simulator uses the backend configured in the experiment YAML, defaulting to CPU.
 
 Training artifacts are written into the mounted `outputs/` or `checkpoints/` paths in this repository.
 
@@ -255,6 +259,8 @@ The reviewed training CLI supports:
 --mpo-temperature-iterations optimizer iterations for the MPO E-step temperature
 --mpo-temperature-lr      optimizer learning rate for the MPO E-step temperature
 --device                  cpu, cuda, or auto learner device
+--sim-compute-backend     cpu or gpu simulator backend override
+--sim-gpu-device          simulator CUDA device for --sim-compute-backend gpu
 --process-envs            run each training env in its own simulator worker process
 --process-start-method    spawn, fork, or forkserver for --process-envs
 --seed                    random seed
@@ -339,7 +345,7 @@ The TCV-style trainer uses `EpisodeReplayBuffer`, sequence replay, recurrent cri
 
 Both trainers support `checkpoint_interval_steps`, write numbered `step_XXXXXXXX.pt` checkpoints at that cadence, keep `latest.pt`, and select `best.pt` by deterministic evaluation mean return. Checkpoint payloads include the actor, critics, target networks, optimizer states, counters, configuration, run metadata, and RNG metadata. Trainer `metrics.json` records the final, latest, and best checkpoint paths.
 
-Both trainers resolve `device` through `cpu`, `cuda`, or `auto`. Requesting `cuda` fails clearly when CUDA is unavailable; `auto` uses CUDA when available and otherwise CPU. Trainer `metrics.json` records requested/actual device, CUDA availability, GPU name, PyTorch version, CUDA version, and throughput metrics including elapsed time, actor inference time, environment step time, replay sampling time, learner time, evaluation time, environment steps per second, learner updates per second, and update-to-data ratio. Synchronous multi-env collection batches actor inference before stepping environments. With `--process-envs`, each training environment is a process-owned `TokamakRLEnv` worker, so simulator stepping can run in parallel CPU processes while learner inference/updates stay in the main process. The TCV-style trainer exposes `updates_per_episode`, `updates_per_env_step`, and `max_learner_catchup_updates` to control update-to-data ratio.
+Both trainers resolve learner `device` through `cpu`, `cuda`, or `auto`. Requesting `cuda` fails clearly when CUDA is unavailable; `auto` uses CUDA when available and otherwise CPU. Simulator compute is configured separately through experiment `sim.compute_backend` / `sim.gpu_device` or the CLI overrides `--sim-compute-backend` / `--sim-gpu-device`. Trainer `metrics.json` records requested/actual learner device, CUDA availability, GPU name, PyTorch version, CUDA version, and throughput metrics including elapsed time, actor inference time, environment step time, replay sampling time, learner time, evaluation time, environment steps per second, learner updates per second, and update-to-data ratio. Synchronous multi-env collection batches actor inference before stepping environments. With `--process-envs`, each training environment is a process-owned `TokamakRLEnv` worker, so simulator stepping can run in parallel worker processes while learner inference/updates stay in the main process. The TCV-style trainer exposes `updates_per_episode`, `updates_per_env_step`, and `max_learner_catchup_updates` to control update-to-data ratio.
 
 The TCV-style trainer is the main training direction. Its implemented algorithm identity is `tcv_mpo_recurrent_actor_critic_v1`: deployable feedforward stochastic actor, twin recurrent Q critics used during training, complete-episode replay, masked sequence chunks, sampled-action MPO policy improvement, KL-constrained actor fitting, and deterministic actor mean for evaluation/export.
 

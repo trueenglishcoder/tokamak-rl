@@ -20,10 +20,10 @@ COPY tokamak-rl/scripts ./tokamak-rl/scripts
 COPY tokamak-rl/configs ./tokamak-rl/configs
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install ./tokamak-sim \
     && if [ -n "$PYTORCH_INDEX_URL" ]; then \
         python -m pip install --index-url "$PYTORCH_INDEX_URL" "torch==$PYTORCH_VERSION"; \
     fi \
+    && python -m pip install './tokamak-sim[gpu]' \
     && python -m pip install './tokamak-rl[train]'
 
 COPY tokamak-rl/tests ./tokamak-rl/tests

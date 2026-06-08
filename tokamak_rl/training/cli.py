@@ -35,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mpo-initial-mean-kl-penalty", type=float, default=None, help="Initial positive penalty for actor mean KL constraint.")
     parser.add_argument("--mpo-initial-std-kl-penalty", type=float, default=None, help="Initial positive penalty for actor standard-deviation KL constraint.")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default=None, help="Learner device for PyTorch models and updates.")
+    parser.add_argument("--sim-compute-backend", choices=["cpu", "gpu"], default=None, help="Override tokamak-sim compute backend for environment stepping.")
+    parser.add_argument("--sim-gpu-device", default=None, help="Override tokamak-sim GPU device when --sim-compute-backend gpu is used.")
     parser.add_argument("--process-envs", action="store_true", help="Run each training environment in its own simulator worker process.")
     parser.add_argument("--process-start-method", choices=["spawn", "fork", "forkserver"], default="spawn", help="Multiprocessing start method for --process-envs.")
     parser.add_argument("--seed", type=int, default=None, help="Random seed.")
@@ -65,6 +67,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     experiment = load_experiment_config(args.config)
+    if args.sim_compute_backend is not None or args.sim_gpu_device is not None:
+        experiment = replace(
+            experiment,
+            env=replace(
+                experiment.env,
+                compute_backend=args.sim_compute_backend if args.sim_compute_backend is not None else experiment.env.compute_backend,
+                gpu_device=args.sim_gpu_device if args.sim_gpu_device is not None else experiment.env.gpu_device,
+            ),
+        )
     trainer_name = args.trainer or experiment.training.trainer
     process_envs = bool(args.process_envs or experiment.training.process_envs)
     process_start_method = str(args.process_start_method or experiment.training.process_start_method)

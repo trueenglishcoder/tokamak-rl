@@ -3,7 +3,8 @@ x-tokamak-rl-common: &tokamak-rl-common
     context: ..
     dockerfile: tokamak-rl/Dockerfile
     args:
-      PYTORCH_INDEX_URL: ${PYTORCH_INDEX_URL:-}
+      PYTORCH_INDEX_URL: ${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
+      PYTORCH_VERSION: ${PYTORCH_VERSION:-2.5.1+cu121}
   image: tokamak-rl:latest
   working_dir: /workspace/tokamak-rl
   environment:
@@ -22,7 +23,13 @@ services:
   tokamak-rl-gpu:
     <<: *tokamak-rl-common
     profiles: ["gpu"]
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     environment:
       MPLCONFIGDIR: /tmp/matplotlib
       PYTHONUNBUFFERED: "1"

@@ -67,8 +67,12 @@ On a GPU server with the NVIDIA container runtime installed, use the GPU profile
 docker compose --profile gpu run --rm tokamak-rl-gpu \
   python scripts/train.py \
     --config configs/experiments/t15md_training_real_replay_like.yaml \
-    --device cuda
+    --device cuda \
+    --sim-compute-backend gpu \
+    --sim-gpu-device cuda:0
 ```
+
+`--device cuda` selects the learner device. `--sim-compute-backend gpu` separately selects tokamak-sim's CUDA boundary-finding backend for environment stepping.
 
 Artifacts are written into mounted local paths such as `outputs/` and `checkpoints/`.
 
@@ -212,7 +216,7 @@ The experiment YAML can also provide the trainer, evaluation, artifact, checkpoi
 python scripts/train.py   --config configs/experiments/t15md_training_real_replay_like_smoke.yaml
 ```
 
-This trainer uses a deployable feedforward actor and twin recurrent critics during training. Its update rule is `tcv_mpo_recurrent_actor_critic_v1`, with sampled-action MPO policy improvement, KL-constrained actor fitting, and recurrent critic updates over sequence chunks. Use `--device cpu`, `--device cuda`, or `--device auto` to control learner placement. Use `--process-envs --num-envs N` to run each real tokamak-sim training environment in its own CPU worker process while the main process batches actor inference and learner updates. It writes training metrics and losses when `--output-dir` is set, including device and throughput fields, and writes final/latest/best checkpoints when `--checkpoint-dir` is set. For real tokamak environments that expose the training contract, checkpointed runs also export `exports/best_actor/` from the selected `best.pt` checkpoint.
+This trainer uses a deployable feedforward actor and twin recurrent critics during training. Its update rule is `tcv_mpo_recurrent_actor_critic_v1`, with sampled-action MPO policy improvement, KL-constrained actor fitting, and recurrent critic updates over sequence chunks. Use `--device cpu`, `--device cuda`, or `--device auto` to control learner placement. Use `--sim-compute-backend gpu` to request tokamak-sim GPU boundary finding for environment stepping. Use `--process-envs --num-envs N` to run each real tokamak-sim training environment in its own worker process while the main process batches actor inference and learner updates. It writes training metrics and losses when `--output-dir` is set, including device and throughput fields, and writes final/latest/best checkpoints when `--checkpoint-dir` is set. For real tokamak environments that expose the training contract, checkpointed runs also export `exports/best_actor/` from the selected `best.pt` checkpoint.
 
 The training CLI shows a terminal progress bar by default with step count, percent complete, step rate, ETA, replay/update counts, episode count, and latest losses. Use `--no-progress` for log-only or noninteractive runs.
 

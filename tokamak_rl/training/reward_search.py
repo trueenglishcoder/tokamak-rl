@@ -69,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--updates-per-episode", type=int, default=None, help="TCV-style updates per completed episode.")
     parser.add_argument("--updates-per-env-step", type=int, default=None, help="TCV-style updates per environment step.")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default=None, help="Learner device.")
+    parser.add_argument("--sim-compute-backend", choices=["cpu", "gpu"], default=None, help="Override tokamak-sim compute backend for environment stepping.")
+    parser.add_argument("--sim-gpu-device", default=None, help="Override tokamak-sim GPU device when --sim-compute-backend gpu is used.")
     parser.add_argument("--seed", type=int, default=None, help="Base trainer seed. Candidate index is added to this seed.")
     parser.add_argument("--eval-episodes", type=int, default=None, help="Evaluation episodes per candidate.")
     parser.add_argument("--eval-max-steps", type=int, default=None, help="Max evaluation steps per episode.")
@@ -106,6 +108,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     experiment = load_experiment_config(args.config)
+    if args.sim_compute_backend is not None or args.sim_gpu_device is not None:
+        experiment = replace(
+            experiment,
+            env=replace(
+                experiment.env,
+                compute_backend=args.sim_compute_backend if args.sim_compute_backend is not None else experiment.env.compute_backend,
+                gpu_device=args.sim_gpu_device if args.sim_gpu_device is not None else experiment.env.gpu_device,
+            ),
+        )
     trainer_name = args.trainer or experiment.training.trainer
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

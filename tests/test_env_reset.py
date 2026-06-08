@@ -81,6 +81,34 @@ def test_tokamak_env_reset_returns_observation_and_info(tmp_path: Path) -> None:
     env.close()
 
 
+def test_tokamak_env_reset_can_use_sim_gpu_backend(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is not available")
+    config_path = tmp_path / "small_sim_gpu.toml"
+    _write_small_sim_config(config_path)
+    env = TokamakRLEnv(
+        EnvConfig(
+            sim_config_path=config_path,
+            compute_backend="gpu",
+            gpu_device="cuda:0",
+            scenario_name="nominal",
+            angles=8,
+            max_episode_steps=3,
+            realism_enabled=False,
+        )
+    )
+
+    obs, info = env.reset(seed=123)
+
+    assert obs.shape == (env.obs_dim,)
+    assert info["machine"].compute_backend == "gpu"
+    assert info["machine"].gpu_device == "cuda:0"
+    assert info["episode_metadata"]["compute"]["backend"] == "gpu"
+    assert info["snapshot"].true_boundary_poly is not None
+    env.close()
+
+
 def test_tokamak_env_reset_can_start_from_zero_ip_and_zero_coils(tmp_path: Path) -> None:
     config_path = tmp_path / "small_sim_zero.toml"
     _write_small_sim_config(config_path)

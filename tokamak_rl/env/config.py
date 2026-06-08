@@ -83,6 +83,8 @@ class EnvConfig:
     """Configuration needed to construct a tokamak-sim backed RL environment."""
 
     sim_config_path: Path
+    compute_backend: str | None = None
+    gpu_device: str | None = None
     initial_currents_path: Path | None = None
     initial_ip: float | None = None
     initial_coil_currents: str = "config"
@@ -102,6 +104,10 @@ class EnvConfig:
 
     def __post_init__(self) -> None:
         version = str(self.observation_version)
+        if self.compute_backend is not None and str(self.compute_backend) not in {"cpu", "gpu"}:
+            raise ValueError("compute_backend must be 'cpu', 'gpu', or None")
+        if self.gpu_device is not None and str(self.gpu_device).strip() == "":
+            raise ValueError("gpu_device must be non-empty when provided")
         if version not in {"v1", "v2"}:
             raise ValueError("observation_version must be 'v1' or 'v2'")
         if int(self.target_preview_steps) < 0:

@@ -254,6 +254,8 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
         raw,
         {
             "config_path",
+            "compute_backend",
+            "gpu_device",
             "initial_currents_path",
             "initial_state",
             "scenario_name",
@@ -269,6 +271,10 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
         "sim",
     )
     sim_config_path = _required_path(raw, "config_path", base_dir=base_dir)
+    compute_backend = None if raw.get("compute_backend") is None else str(raw.get("compute_backend"))
+    if compute_backend is not None and compute_backend not in {"cpu", "gpu"}:
+        raise ValueError("sim.compute_backend must be cpu or gpu")
+    gpu_device = None if raw.get("gpu_device") is None else str(raw.get("gpu_device"))
     initial_raw = raw.get("initial_currents_path")
     initial_path = None if initial_raw is None else _resolve_existing_path(initial_raw, base_dir=base_dir, field="initial_currents_path")
     initial_ip = None
@@ -312,6 +318,8 @@ def _load_env_config(raw: Mapping[str, Any], *, base_dir: Path) -> EnvConfig:
         termination = _load_termination_config(_require_mapping(raw, "termination"))
     return EnvConfig(
         sim_config_path=sim_config_path,
+        compute_backend=compute_backend,
+        gpu_device=gpu_device,
         initial_currents_path=initial_path,
         initial_ip=initial_ip,
         initial_coil_currents=initial_coil_currents,
